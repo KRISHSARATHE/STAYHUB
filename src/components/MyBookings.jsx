@@ -1,130 +1,393 @@
+import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 
-import { Link } from "react-router-dom";
-
+import stayhubLogo from "../assets/stayhub-logo.png";
 function MyBookings() {
-  const bookings = [
-    {
-      id: "STH-2026-001",
-      hotel: "The Grand Palace",
-      location: "Indore, Madhya Pradesh",
-      checkIn: "15 Sep 2026",
-      checkOut: "17 Sep 2026",
-      guests: 2,
-      room: "Deluxe Room",
-      total: 4998,
-      status: "Confirmed",
-      image:
-        "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=900&q=80",
-    },
-  ];
+  const navigate = useNavigate();
+
+  const [bookings, setBookings] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+
+  useEffect(() => {
+    // Get logged-in user
+    const savedUser = localStorage.getItem("stayhubCurrentUser");
+
+    if (!savedUser) {
+      alert("Please login to view your bookings.");
+      navigate("/login");
+      return;
+    }
+
+    const user = JSON.parse(savedUser);
+    setCurrentUser(user);
+
+    // Get all bookings
+    const savedBookings =
+      JSON.parse(localStorage.getItem("stayhubBookings")) || [];
+
+    // Show only current user's bookings
+    const userBookings = savedBookings.filter(
+      (booking) =>
+        booking.userId === user.id ||
+        booking.userId === user.loginId ||
+        booking.userEmail?.toLowerCase() === user.email?.toLowerCase()
+    );
+
+    // Latest booking first
+    userBookings.reverse();
+
+    setBookings(userBookings);
+  }, [navigate]);
+
+  // Cancel booking
+  const handleCancel = (bookingId) => {
+    const confirmCancel = window.confirm(
+      "Are you sure you want to cancel this booking?"
+    );
+
+    if (!confirmCancel) return;
+
+    const allBookings =
+      JSON.parse(localStorage.getItem("stayhubBookings")) || [];
+
+    const updatedBookings = allBookings.map((booking) =>
+      booking.id === bookingId
+        ? {
+            ...booking,
+            status: "Cancelled",
+            cancelledAt: new Date().toISOString(),
+          }
+        : booking
+    );
+
+    localStorage.setItem(
+      "stayhubBookings",
+      JSON.stringify(updatedBookings)
+    );
+
+    // Update page immediately
+    setBookings((prev) =>
+      prev.map((booking) =>
+        booking.id === bookingId
+          ? { ...booking, status: "Cancelled" }
+          : booking
+      )
+    );
+  };
+
+  // Format date
+  const formatDate = (date) => {
+    if (!date) return "-";
+
+    const d = new Date(date);
+
+    if (isNaN(d.getTime())) return date;
+
+    return d.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  };
+
+  // Loading / no user
+  if (!currentUser) {
+    return null;
+  }
 
   return (
     <div className="my-bookings-page">
 
+      {/* ================= HEADER ================= */}
+
       <header className="bookings-header">
+
         <Link to="/" className="bookings-logo">
-          🏨 STAYHUB
+          STAYHUB
         </Link>
 
         <Link to="/" className="bookings-home">
           ← Back to Home
         </Link>
+
       </header>
+
+      {/* ================= MAIN ================= */}
 
       <main className="bookings-main">
 
         <div className="bookings-title">
+
           <div>
             <p className="bookings-label">YOUR TRIPS</p>
+
             <h1>My Bookings</h1>
-            <p>Manage and view your hotel reservations.</p>
+
+            <p>
+              Manage and view your hotel reservations.
+            </p>
           </div>
 
           <Link to="/hotels" className="book-more-btn">
             + Book Another Stay
           </Link>
+
         </div>
 
-        <div className="booking-list">
+        {/* ================= WELCOME ================= */}
 
-          {bookings.map((booking) => (
-            <div className="my-booking-card" key={booking.id}>
+        <div
+          style={{
+            marginBottom: "25px",
+            padding: "15px 20px",
+            borderRadius: "12px",
+            background: "#f5f7ff",
+            border: "1px solid #e5e7eb",
+          }}
+        >
+          <strong>
+            Welcome, {currentUser.name} 👋
+          </strong>
 
-              <img
-                src={booking.image}
-                alt={booking.hotel}
-                className="my-booking-image"
-              />
+          <div
+            style={{
+              marginTop: "5px",
+              color: "#666",
+              fontSize: "14px",
+            }}
+          >
+            {bookings.length} booking
+            {bookings.length !== 1 ? "s" : ""} found
+          </div>
+        </div>
 
-              <div className="my-booking-content">
+        {/* ================= NO BOOKINGS ================= */}
 
-                <div className="booking-top-row">
-                  <div>
-                    <span className="booking-status">
-                      ✓ {booking.status}
+        {bookings.length === 0 ? (
+
+          <div
+            style={{
+              textAlign: "center",
+              padding: "70px 20px",
+              background: "#fff",
+              borderRadius: "16px",
+              border: "1px solid #e5e7eb",
+            }}
+          >
+
+            <div style={{ fontSize: "55px", marginBottom: "15px" }}>
+              
+            </div>
+
+            <h2>No bookings yet</h2>
+
+            <p
+              style={{
+                color: "#666",
+                marginTop: "8px",
+                marginBottom: "25px",
+              }}
+            >
+              You haven't made any hotel reservations yet.
+            </p>
+
+            <Link to="/hotels" className="book-more-btn">
+              Find a Hotel
+            </Link>
+
+          </div>
+
+        ) : (
+
+          /* ================= BOOKING LIST ================= */
+
+          <div className="booking-list">
+
+            {bookings.map((booking) => (
+
+              <div
+                className="my-booking-card"
+                key={booking.id}
+              >
+
+                {/* HOTEL IMAGE */}
+
+                <img
+                  src={
+                    booking.image ||
+                    "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=900&q=80"
+                  }
+                  alt={booking.hotelName || booking.hotel}
+                  className="my-booking-image"
+                />
+
+                {/* CONTENT */}
+
+                <div className="my-booking-content">
+
+                  {/* TOP ROW */}
+
+                  <div className="booking-top-row">
+
+                    <div>
+
+                      <span
+                        className="booking-status"
+                        style={{
+                          color:
+                            booking.status === "Cancelled"
+                              ? "#dc2626"
+                              : "#16a34a",
+                        }}
+                      >
+                        {booking.status === "Cancelled"
+                          ? "✕ Cancelled"
+                          : "✓ Confirmed"}
+                      </span>
+
+                      <h2>
+                        {booking.hotelName || booking.hotel}
+                      </h2>
+
+                      <p className="booking-location">
+                        📍 {booking.location}
+                      </p>
+
+                    </div>
+
+                    <div className="booking-price">
+
+                      <span>Total Amount</span>
+
+                      <strong>
+                        ₹
+                        {Number(
+                          booking.price ?? booking.total ?? 0
+                        ).toLocaleString("en-IN")}
+                      </strong>
+
+                    </div>
+
+                  </div>
+
+                  {/* DETAILS */}
+
+                  <div className="booking-details-grid">
+
+                    <div>
+                      <span>CHECK-IN</span>
+
+                      <strong>
+                        {formatDate(booking.checkIn)}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>CHECK-OUT</span>
+
+                      <strong>
+                        {formatDate(booking.checkOut)}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>ROOM</span>
+
+                      <strong>
+                        {booking.room || "Deluxe Room"}
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>GUESTS</span>
+
+                      <strong>
+                        {booking.guests || 1} Guests
+                      </strong>
+                    </div>
+
+                  </div>
+
+                  {/* EXTRA DETAILS */}
+
+                  <div
+                    style={{
+                      marginTop: "15px",
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "20px",
+                      color: "#666",
+                      fontSize: "14px",
+                    }}
+                  >
+
+                    <span>
+                      🌙{" "}
+                      <strong>
+                        {booking.nights || 1}
+                      </strong>{" "}
+                      Night
+                      {(booking.nights || 1) !== 1
+                        ? "s"
+                        : ""}
                     </span>
 
-                    <h2>{booking.hotel}</h2>
+                    <span>
+                      👤 {booking.name}
+                    </span>
 
-                    <p className="booking-location">
-                      📍 {booking.location}
-                    </p>
+                    <span>
+                      📞 {booking.phone}
+                    </span>
+
                   </div>
 
-                  <div className="booking-price">
-                    <span>Total Amount</span>
-                    <strong>₹{booking.total.toLocaleString()}</strong>
+                  {/* BOTTOM */}
+
+                  <div className="booking-bottom">
+
+                    <span className="booking-id">
+                      Booking ID:{" "}
+                      <strong>{booking.id}</strong>
+                    </span>
+
+                    {booking.status !== "Cancelled" && (
+                      <button
+                        className="cancel-booking"
+                        onClick={() =>
+                          handleCancel(booking.id)
+                        }
+                      >
+                        Cancel Booking
+                      </button>
+                    )}
+
+                    {booking.status === "Cancelled" && (
+                      <span
+                        style={{
+                          color: "#dc2626",
+                          fontWeight: "600",
+                        }}
+                      >
+                        Booking Cancelled
+                      </span>
+                    )}
+
                   </div>
-                </div>
-
-                <div className="booking-details-grid">
-
-                  <div>
-                    <span>CHECK-IN</span>
-                    <strong>{booking.checkIn}</strong>
-                  </div>
-
-                  <div>
-                    <span>CHECK-OUT</span>
-                    <strong>{booking.checkOut}</strong>
-                  </div>
-
-                  <div>
-                    <span>ROOM</span>
-                    <strong>{booking.room}</strong>
-                  </div>
-
-                  <div>
-                    <span>GUESTS</span>
-                    <strong>{booking.guests} Guests</strong>
-                  </div>
-
-                </div>
-
-                <div className="booking-bottom">
-
-                  <span className="booking-id">
-                    Booking ID: <strong>{booking.id}</strong>
-                  </span>
-
-                  <button
-                    className="cancel-booking"
-                    onClick={() =>
-                      alert("Cancellation feature will be added soon.")
-                    }
-                  >
-                    Cancel Booking
-                  </button>
 
                 </div>
 
               </div>
-            </div>
-          ))}
 
-        </div>
+            ))}
+
+          </div>
+
+        )}
 
       </main>
+
+      {/* ================= FOOTER ================= */}
 
       <footer className="bookings-footer">
         © 2026 STAYHUB. All rights reserved.
@@ -135,4 +398,3 @@ function MyBookings() {
 }
 
 export default MyBookings;
-

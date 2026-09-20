@@ -1,5 +1,14 @@
-import { BrowserRouter, Routes, Route, Link, useNavigate } from "react-router-dom";
-import { useState } from "react";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Link,
+  useNavigate,
+} from "react-router-dom";
+
+import stayhubLogo from "./assets/stayhub-logo.png";
+
+import { useEffect, useState } from "react";
 
 import Hotels from "./components/Hotels";
 import HotelDetails from "./components/HotelDetails";
@@ -10,7 +19,9 @@ import MyBookings from "./components/MyBookings";
 
 import "./index.css";
 
-// ================= HOME PAGE =================
+// =====================================================
+// HOME PAGE
+// =====================================================
 
 function Home() {
   const navigate = useNavigate();
@@ -19,6 +30,57 @@ function Home() {
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
   const [guests, setGuests] = useState("2");
+
+  // ===================================================
+  // LOGIN USER
+  // ===================================================
+
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    const loadUser = () => {
+      const savedUser =
+        localStorage.getItem("stayhubCurrentUser");
+
+      if (savedUser) {
+        try {
+          setUser(JSON.parse(savedUser));
+        } catch (error) {
+          console.error("Invalid user data:", error);
+          localStorage.removeItem("stayhubCurrentUser");
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
+    };
+
+    loadUser();
+
+    // Update if login/logout happens
+    window.addEventListener("storage", loadUser);
+
+    return () => {
+      window.removeEventListener("storage", loadUser);
+    };
+  }, []);
+
+  // ===================================================
+  // LOGOUT
+  // ===================================================
+
+  const handleLogout = () => {
+    localStorage.removeItem("stayhubCurrentUser");
+    localStorage.removeItem("stayhubRememberMe");
+
+    setUser(null);
+
+    navigate("/");
+  };
+
+  // ===================================================
+  // HOTELS
+  // ===================================================
 
   const hotels = [
     {
@@ -50,67 +112,140 @@ function Home() {
     },
   ];
 
+  // ===================================================
+  // SEARCH
+  // ===================================================
+
   const handleSearch = () => {
     const params = new URLSearchParams();
 
-    if (destination) params.set("destination", destination);
-    if (checkIn) params.set("checkIn", checkIn);
-    if (checkOut) params.set("checkOut", checkOut);
-    if (guests) params.set("guests", guests);
+    if (destination) {
+      params.set("destination", destination);
+    }
+
+    if (checkIn) {
+      params.set("checkIn", checkIn);
+    }
+
+    if (checkOut) {
+      params.set("checkOut", checkOut);
+    }
+
+    if (guests) {
+      params.set("guests", guests);
+    }
 
     navigate(`/hotels?${params.toString()}`);
   };
 
+  // ===================================================
+  // HOME UI
+  // ===================================================
+
   return (
     <div className="home-page">
 
-      {/* ================= NAVBAR ================= */}
+      {/* =================================================
+          NAVBAR
+      ================================================= */}
 
       <nav className="navbar">
+
         <div className="nav-container">
 
-        <Link to="/" className="logo">
-  <img
-    src="/src/assets/stayhub-logo.png"
-    alt="STAYHUB"
-    style={{
-      width: "150px",
-      height: "auto",
-      display: "block"
-    }}
-  />
-</Link>
-       
+          {/* LOGO */}
+
+          <Link to="/" className="logo">
+
+            <img
+              src="/src/assets/stayhub-logo.png"
+              alt="STAYHUB"
+              style={{
+                width: "150px",
+                height: "auto",
+                display: "block",
+              }}
+            />
+
+          </Link>
+
+          {/* NAV LINKS */}
 
           <div className="nav-links">
-            <Link to="/">Home</Link>
-            <Link to="/hotels">Hotels</Link>
-            <a href="#features">Features</a>
-            <a href="#about">About</a>
+
+            <Link to="/">
+              Home
+            </Link>
+
+            <Link to="/hotels">
+              Hotels
+            </Link>
+
+            <a href="#features">
+              Features
+            </a>
+
+            <a href="#about">
+              About
+            </a>
+
           </div>
+
+          {/* NAV ACTIONS */}
 
           <div className="nav-actions">
 
-            <button
-              className="login-btn"
-              onClick={() => navigate("/login")}
-            >
-              Login
-            </button>
+            {user ? (
+              <>
+                {/* ACCOUNT */}
 
-            <button
-              className="signup-btn"
-              onClick={() => navigate("/signup")}
-            >
-              Sign Up
-            </button>
+                <button
+                  className="login-btn"
+                  onClick={() => navigate("/my-account")}
+                >
+                  👤 {user.name}
+                </button>
+
+                {/* LOGOUT */}
+
+                <button
+                  className="signup-btn"
+                  onClick={handleLogout}
+                >
+                  Logout
+                </button>
+              </>
+            ) : (
+              <>
+                {/* LOGIN */}
+
+                <button
+                  className="login-btn"
+                  onClick={() => navigate("/login")}
+                >
+                  Login
+                </button>
+
+                {/* SIGN UP */}
+
+                <button
+                  className="signup-btn"
+                  onClick={() => navigate("/signup")}
+                >
+                  Sign Up
+                </button>
+              </>
+            )}
 
           </div>
 
         </div>
+
       </nav>
 
-      {/* ================= HERO ================= */}
+      {/* =================================================
+          HERO
+      ================================================= */}
 
       <section className="hero">
 
@@ -129,73 +264,115 @@ function Home() {
           </h1>
 
           <p>
-            Discover comfortable hotels, beautiful destinations and
-            unforgettable stays — all in one place.
+            Discover comfortable hotels, beautiful destinations
+            and unforgettable stays — all in one place.
           </p>
 
-          {/* ================= SEARCH ================= */}
+          {/* SEARCH */}
 
           <div className="search-box">
 
+            {/* DESTINATION */}
+
             <div className="search-item">
 
-              <label>📍 Destination</label>
+              <label>
+                📍 Destination
+              </label>
 
               <input
                 type="text"
                 placeholder="Where are you going?"
                 value={destination}
-                onChange={(e) => setDestination(e.target.value)}
+                onChange={(e) =>
+                  setDestination(e.target.value)
+                }
               />
 
             </div>
 
             <div className="search-divider"></div>
 
+            {/* CHECK IN */}
+
             <div className="search-item">
 
-              <label>📅 Check-in</label>
+              <label>
+                📅 Check-in
+              </label>
 
               <input
                 type="date"
                 value={checkIn}
-                onChange={(e) => setCheckIn(e.target.value)}
+                onChange={(e) =>
+                  setCheckIn(e.target.value)
+                }
               />
 
             </div>
 
             <div className="search-divider"></div>
 
+            {/* CHECK OUT */}
+
             <div className="search-item">
 
-              <label>📅 Check-out</label>
+              <label>
+                📅 Check-out
+              </label>
 
               <input
                 type="date"
                 value={checkOut}
-                onChange={(e) => setCheckOut(e.target.value)}
+                onChange={(e) =>
+                  setCheckOut(e.target.value)
+                }
               />
 
             </div>
 
             <div className="search-divider"></div>
 
+            {/* GUESTS */}
+
             <div className="search-item guest-item">
 
-              <label>👥 Guests</label>
+              <label>
+                👥 Guests
+              </label>
 
               <select
                 value={guests}
-                onChange={(e) => setGuests(e.target.value)}
+                onChange={(e) =>
+                  setGuests(e.target.value)
+                }
               >
-                <option value="1">1 Guest</option>
-                <option value="2">2 Guests</option>
-                <option value="3">3 Guests</option>
-                <option value="4">4 Guests</option>
-                <option value="5">5+ Guests</option>
+
+                <option value="1">
+                  1 Guest
+                </option>
+
+                <option value="2">
+                  2 Guests
+                </option>
+
+                <option value="3">
+                  3 Guests
+                </option>
+
+                <option value="4">
+                  4 Guests
+                </option>
+
+                <option value="5">
+                  5+ Guests
+                </option>
+
               </select>
 
             </div>
+
+            {/* SEARCH BUTTON */}
 
             <button
               className="search-btn"
@@ -210,7 +387,9 @@ function Home() {
 
       </section>
 
-      {/* ================= STATS ================= */}
+      {/* =================================================
+          STATS
+      ================================================= */}
 
       <section className="stats-section">
 
@@ -240,7 +419,9 @@ function Home() {
 
       </section>
 
-      {/* ================= POPULAR HOTELS ================= */}
+      {/* =================================================
+          POPULAR HOTELS
+      ================================================= */}
 
       <section
         className="hotels-section"
@@ -309,6 +490,7 @@ function Home() {
                 <div className="hotel-bottom">
 
                   <div>
+
                     <strong>
                       {hotel.price}
                     </strong>
@@ -317,6 +499,7 @@ function Home() {
                       {" "}
                       / night
                     </span>
+
                   </div>
 
                   <button
@@ -340,7 +523,9 @@ function Home() {
 
       </section>
 
-      {/* ================= FEATURES ================= */}
+      {/* =================================================
+          FEATURES
+      ================================================= */}
 
       <section
         className="features-section"
@@ -437,7 +622,9 @@ function Home() {
 
       </section>
 
-      {/* ================= CTA ================= */}
+      {/* =================================================
+          CTA
+      ================================================= */}
 
       <section
         className="cta-section"
@@ -470,7 +657,9 @@ function Home() {
 
       </section>
 
-      {/* ================= FOOTER ================= */}
+      {/* =================================================
+          FOOTER
+      ================================================= */}
 
       <footer className="footer">
 
@@ -481,17 +670,20 @@ function Home() {
             <Link
               to="/"
               className="logo"
+              style={{
+                display: "flex",
+                alignItems: "center",
+              }}
             >
-              <span className="logo-icon">
-                🏨
-              </span>
-
-              <span style={{ color: "#0F172A", fontWeight: 700 }}>
-                STAY
-                <span style={{ color: "#2563EB" }}>
-                  HUB
-                </span>
-              </span>
+              <img
+                src={stayhubLogo}
+                alt="STAYHUB"
+                style={{
+                  height: "42px",
+                  width: "auto",
+                  objectFit: "contain",
+                }}
+              />
             </Link>
 
             <p>
@@ -573,7 +765,467 @@ function Home() {
   );
 }
 
-// ================= APP =================
+// =====================================================
+// MY ACCOUNT PAGE
+// =====================================================
+
+function MyAccount() {
+
+  const navigate = useNavigate();
+
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+
+    const savedUser =
+      localStorage.getItem("stayhubCurrentUser");
+
+    if (savedUser) {
+
+      try {
+        setUser(JSON.parse(savedUser));
+      } catch (error) {
+
+        console.error("Invalid user data:", error);
+
+        localStorage.removeItem(
+          "stayhubCurrentUser"
+        );
+
+      }
+
+    }
+
+  }, []);
+
+  // ===================================================
+  // NOT LOGGED IN
+  // ===================================================
+
+  if (!user) {
+
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: "#f8fafc",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "20px",
+        }}
+      >
+
+        <div
+          style={{
+            background: "white",
+            padding: "40px",
+            borderRadius: "20px",
+            textAlign: "center",
+            boxShadow:
+              "0 10px 30px rgba(0,0,0,0.08)",
+            maxWidth: "420px",
+            width: "100%",
+          }}
+        >
+
+          <div
+            style={{
+              fontSize: "50px",
+              marginBottom: "15px",
+            }}
+          >
+            🔐
+          </div>
+
+          <h1>
+            Login Required
+          </h1>
+
+          <p
+            style={{
+              color: "#64748b",
+              marginBottom: "25px",
+            }}
+          >
+            Please login to view your account details.
+          </p>
+
+          <button
+            onClick={() => navigate("/login")}
+            style={{
+              background: "#4f46e5",
+              color: "white",
+              border: "none",
+              padding: "12px 25px",
+              borderRadius: "10px",
+              cursor: "pointer",
+              fontWeight: "600",
+            }}
+          >
+            Login
+          </button>
+
+        </div>
+
+      </div>
+    );
+  }
+
+  // ===================================================
+  // ACCOUNT LOGOUT
+  // ===================================================
+
+  const handleLogout = () => {
+
+    localStorage.removeItem(
+      "stayhubCurrentUser"
+    );
+
+    localStorage.removeItem(
+      "stayhubRememberMe"
+    );
+
+    setUser(null);
+
+    navigate("/");
+
+  };
+
+  // ===================================================
+  // ACCOUNT PAGE
+  // ===================================================
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "#f8fafc",
+        paddingBottom: "50px",
+      }}
+    >
+
+      {/* ACCOUNT HEADER */}
+
+      <header
+        style={{
+          background: "#4f46e5",
+          padding: "18px 30px",
+          color: "white",
+        }}
+      >
+
+        <div
+          style={{
+            maxWidth: "1100px",
+            margin: "auto",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+
+          <Link
+            to="/"
+            style={{
+              color: "white",
+              textDecoration: "none",
+              fontSize: "24px",
+              fontWeight: "700",
+            }}
+          >
+            STAYHUB
+          </Link>
+
+          <button
+            onClick={() => navigate("/")}
+            style={{
+              background: "white",
+              color: "#4f46e5",
+              border: "none",
+              padding: "10px 18px",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: "600",
+            }}
+          >
+            Home
+          </button>
+
+        </div>
+
+      </header>
+
+      {/* ACCOUNT CONTENT */}
+
+      <main
+        style={{
+          maxWidth: "700px",
+          margin: "50px auto",
+          padding: "0 20px",
+        }}
+      >
+
+        <div
+          style={{
+            background: "white",
+            borderRadius: "20px",
+            padding: "35px",
+            boxShadow:
+              "0 10px 30px rgba(0,0,0,0.08)",
+          }}
+        >
+
+          {/* PROFILE */}
+
+          <div
+            style={{
+              textAlign: "center",
+              marginBottom: "35px",
+            }}
+          >
+
+            <div
+              style={{
+                width: "80px",
+                height: "80px",
+                margin: "0 auto 15px",
+                borderRadius: "50%",
+                background: "#eef2ff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: "38px",
+              }}
+            >
+              👤
+            </div>
+
+            <h1
+              style={{
+                margin: "0 0 8px",
+                color: "#0f172a",
+              }}
+            >
+              Welcome, {user.name}
+            </h1>
+
+            <p
+              style={{
+                margin: 0,
+                color: "#64748b",
+              }}
+            >
+              Your STAYHUB account
+            </p>
+
+          </div>
+
+          {/* USER DETAILS */}
+
+          <div
+            style={{
+              border: "1px solid #e2e8f0",
+              borderRadius: "14px",
+              overflow: "hidden",
+            }}
+          >
+
+            {/* NAME */}
+
+            <div
+              style={{
+                padding: "18px 20px",
+                borderBottom:
+                  "1px solid #e2e8f0",
+              }}
+            >
+
+              <small
+                style={{
+                  color: "#64748b",
+                  display: "block",
+                  marginBottom: "5px",
+                }}
+              >
+                NAME
+              </small>
+
+              <strong>
+                {user.name}
+              </strong>
+
+            </div>
+
+            {/* LOGIN ID */}
+
+            <div
+              style={{
+                padding: "18px 20px",
+                borderBottom:
+                  "1px solid #e2e8f0",
+              }}
+            >
+
+              <small
+                style={{
+                  color: "#64748b",
+                  display: "block",
+                  marginBottom: "5px",
+                }}
+              >
+                LOGIN ID
+              </small>
+
+              <strong>
+                {user.loginId || user.id || "N/A"}
+              </strong>
+
+            </div>
+
+            {/* EMAIL */}
+
+            <div
+              style={{
+                padding: "18px 20px",
+                borderBottom:
+                  "1px solid #e2e8f0",
+              }}
+            >
+
+              <small
+                style={{
+                  color: "#64748b",
+                  display: "block",
+                  marginBottom: "5px",
+                }}
+              >
+                EMAIL
+              </small>
+
+              <strong>
+                {user.email}
+              </strong>
+
+            </div>
+
+            {/* MOBILE */}
+
+            <div
+              style={{
+                padding: "18px 20px",
+                borderBottom:
+                  "1px solid #e2e8f0",
+              }}
+            >
+
+              <small
+                style={{
+                  color: "#64748b",
+                  display: "block",
+                  marginBottom: "5px",
+                }}
+              >
+                MOBILE
+              </small>
+
+              <strong>
+                {user.mobile || "N/A"}
+              </strong>
+
+            </div>
+
+            {/* STATUS */}
+
+            <div
+              style={{
+                padding: "18px 20px",
+              }}
+            >
+
+              <small
+                style={{
+                  color: "#64748b",
+                  display: "block",
+                  marginBottom: "5px",
+                }}
+              >
+                ACCOUNT STATUS
+              </small>
+
+              <strong
+                style={{
+                  color: "#16a34a",
+                }}
+              >
+                ● Logged In
+              </strong>
+
+            </div>
+
+          </div>
+
+          {/* BUTTONS */}
+
+          <div
+            style={{
+              display: "flex",
+              gap: "12px",
+              marginTop: "25px",
+              flexWrap: "wrap",
+            }}
+          >
+
+            <button
+              onClick={() =>
+                navigate("/my-bookings")
+              }
+              style={{
+                flex: 1,
+                minWidth: "180px",
+                padding: "13px",
+                border: "none",
+                borderRadius: "10px",
+                background: "#4f46e5",
+                color: "white",
+                fontWeight: "600",
+                cursor: "pointer",
+              }}
+            >
+              📋 My Bookings
+            </button>
+
+            <button
+              onClick={handleLogout}
+              style={{
+                flex: 1,
+                minWidth: "180px",
+                padding: "13px",
+                border:
+                  "1px solid #ef4444",
+                borderRadius: "10px",
+                background: "white",
+                color: "#ef4444",
+                fontWeight: "600",
+                cursor: "pointer",
+              }}
+            >
+              🚪 Logout
+            </button>
+
+          </div>
+
+        </div>
+
+      </main>
+
+    </div>
+  );
+}
+
+// =====================================================
+// APP
+// =====================================================
 
 function App() {
 
@@ -583,39 +1235,60 @@ function App() {
 
       <Routes>
 
+        {/* HOME */}
+
         <Route
           path="/"
           element={<Home />}
         />
+
+        {/* HOTELS */}
 
         <Route
           path="/hotels"
           element={<Hotels />}
         />
 
+        {/* HOTEL DETAILS */}
+
         <Route
           path="/hotels/:id"
           element={<HotelDetails />}
         />
+
+        {/* BOOKING */}
 
         <Route
           path="/booking"
           element={<Booking />}
         />
 
+        {/* LOGIN */}
+
         <Route
           path="/login"
           element={<Login />}
         />
+
+        {/* SIGNUP */}
 
         <Route
           path="/signup"
           element={<Signup />}
         />
 
+        {/* MY BOOKINGS */}
+
         <Route
           path="/my-bookings"
           element={<MyBookings />}
+        />
+
+        {/* MY ACCOUNT */}
+
+        <Route
+          path="/my-account"
+          element={<MyAccount />}
         />
 
       </Routes>
