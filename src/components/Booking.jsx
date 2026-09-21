@@ -1,7 +1,7 @@
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 
-import stayhubLogo from "../assets/stayhub-logo.png";
+import stayhubLogo from "../assets/logo.svg";
 // ======================================================
 // HOTEL DATA
 // ======================================================

@@ -1,7 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 
-import stayhubLogo from "../assets/stayhub-logo.png";
+import stayhubLogo from "../assets/logo.svg";
 function MyBookings() {
   const navigate = useNavigate();
 

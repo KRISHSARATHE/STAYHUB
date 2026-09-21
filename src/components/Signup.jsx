@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useState } from "react";
-import logo from "../assets/stayhub-logo.png";
+import logo from "../assets/logo.svg";
 
 function Signup() {
   const [formData, setFormData] = useState({

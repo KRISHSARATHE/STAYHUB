@@ -6,7 +6,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 
-import stayhubLogo from "./assets/stayhub-logo.png";
+import stayhubLogo from "./assets/logo.svg";
 
 import { useEffect, useState } from "react";
 
@@ -158,7 +158,7 @@ function Home() {
           <Link to="/" className="logo">
 
             <img
-              src="/src/assets/stayhub-logo.png"
+              src="/src/assets/logo.svg"
               alt="STAYHUB"
               style={{
                 width: "150px",
