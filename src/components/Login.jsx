@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import logo from "../assets/logo.svg";
+import { setCurrentUser } from "../utils/stayhub";
 
 function Login() {
   const [formData, setFormData] = useState({
@@ -12,6 +13,50 @@ function Login() {
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const googleButtonRef = useRef(null);
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
+
+  useEffect(() => {
+    if (!googleClientId || !googleButtonRef.current) return;
+    const renderGoogle = () => {
+      if (!window.google?.accounts?.id || !googleButtonRef.current) return;
+      window.google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: (response) => {
+          try {
+            const payload = JSON.parse(atob(response.credential.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+            const user = { id: payload.sub, name: payload.name || payload.email?.split("@")[0] || "Google User", email: payload.email || "", picture: payload.picture || "", mobile: "", google: true, emailVerified: true, createdAt: new Date().toISOString() };
+            const users = JSON.parse(localStorage.getItem("stayhubUsers") || "[]");
+            if (!users.some((item) => item.email?.toLowerCase() === user.email.toLowerCase())) { localStorage.setItem("stayhubUsers", JSON.stringify([...users, user])); }
+            setCurrentUser(user);
+            setSuccess(`Welcome back, ${user.name}!`);
+            setTimeout(() => { window.location.href = "/"; }, 500);
+          } catch {
+            setError("Google sign-in could not be completed. Please try again.");
+          }
+        },
+      });
+      googleButtonRef.current.innerHTML = "";
+      window.google.accounts.id.renderButton(googleButtonRef.current, { theme: "outline", size: "large", width: 360, text: "continue_with" });
+    };
+    if (window.google?.accounts?.id) renderGoogle();
+    else {
+      const existing = document.getElementById("google-gsi-script");
+      if (existing) existing.addEventListener("load", renderGoogle, { once: true });
+      else {
+        const script = document.createElement("script");
+        script.id = "google-gsi-script";
+        script.src = "https://accounts.google.com/gsi/client";
+        script.async = true; script.defer = true; script.onload = renderGoogle;
+        document.head.appendChild(script);
+      }
+    }
+    return () => { if (googleButtonRef.current) googleButtonRef.current.innerHTML = ""; };
+  }, [googleClientId]);
+
+  const handleGoogleClick = () => {
+    if (!googleClientId) setError("Google Login needs VITE_GOOGLE_CLIENT_ID in your .env file.");
+  };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -47,10 +92,7 @@ function Login() {
     }
 
     // Save logged-in user
-    localStorage.setItem(
-      "stayhubCurrentUser",
-      JSON.stringify(user)
-    );
+    setCurrentUser(user);
 
     // Remember me
     if (rememberMe) {
@@ -232,6 +274,14 @@ function Login() {
           {/* DIVIDER */}
           <div className="login-divider">
             <span>OR</span>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: "18px" }}>
+            {googleClientId ? (
+              <div ref={googleButtonRef}></div>
+            ) : (
+              <button type="button" onClick={handleGoogleClick} style={{ width: "100%", padding: "12px", border: "1px solid #d1d5db", borderRadius: "8px", background: "#fff", color: "#334155", fontWeight: 700, cursor: "pointer" }}>Continue with Google</button>
+            )}
           </div>
 
           {/* SIGNUP */}

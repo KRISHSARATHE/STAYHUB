@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useState } from "react";
 import logo from "../assets/logo.svg";
+import { setCurrentUser } from "../utils/stayhub";
 
 function Signup() {
   const [formData, setFormData] = useState({
@@ -140,10 +141,7 @@ function Signup() {
         JSON.stringify(updatedUsers)
       );
 
-      localStorage.setItem(
-        "stayhubCurrentUser",
-        JSON.stringify(newUser)
-      );
+      setCurrentUser(newUser);
 
       localStorage.setItem("stayhubRememberMe", "true");
 

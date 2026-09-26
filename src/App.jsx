@@ -7,6 +7,7 @@ import {
 } from "react-router-dom";
 
 import stayhubLogo from "./assets/logo.svg";
+import hotels from "./assets/hotels.js";
 
 import { useEffect, useState } from "react";
 
@@ -16,6 +17,11 @@ import Booking from "./components/Booking";
 import Login from "./components/Login";
 import Signup from "./components/Signup";
 import MyBookings from "./components/MyBookings";
+import Wishlist from "./components/Wishlist";
+import AdminLogin from "./components/AdminLogin";
+import AdminDashboard from "./components/AdminDashboard";
+import GuestSelector from "./components/GuestSelector";
+import { getMinDate, tomorrowInput, validateGuestSelection, clearCurrentUser } from "./utils/stayhub";
 
 import "./index.css";
 
@@ -27,9 +33,10 @@ function Home() {
   const navigate = useNavigate();
 
   const [destination, setDestination] = useState("");
-  const [checkIn, setCheckIn] = useState("");
-  const [checkOut, setCheckOut] = useState("");
-  const [guests, setGuests] = useState("2");
+  const [checkIn, setCheckIn] = useState(getMinDate());
+  const [checkOut, setCheckOut] = useState(tomorrowInput());
+  const [guestData, setGuestData] = useState({ rooms: 1, adults: 2, children: 0, childAges: [] });
+  const [searchError, setSearchError] = useState("");
 
   // ===================================================
   // LOGIN USER
@@ -59,9 +66,11 @@ function Home() {
 
     // Update if login/logout happens
     window.addEventListener("storage", loadUser);
+    window.addEventListener("stayhub-auth-change", loadUser);
 
     return () => {
       window.removeEventListener("storage", loadUser);
+      window.removeEventListener("stayhub-auth-change", loadUser);
     };
   }, []);
 
@@ -70,11 +79,8 @@ function Home() {
   // ===================================================
 
   const handleLogout = () => {
-    localStorage.removeItem("stayhubCurrentUser");
-    localStorage.removeItem("stayhubRememberMe");
-
+    clearCurrentUser();
     setUser(null);
-
     navigate("/");
   };
 
@@ -82,59 +88,45 @@ function Home() {
   // HOTELS
   // ===================================================
 
-  const hotels = [
-    {
-      id: 1,
-      name: "The Grand Palace",
-      location: "Indore, Madhya Pradesh",
-      price: "₹2,499",
-      rating: "4.8",
-      image:
-        "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=900&q=80",
-    },
-    {
-      id: 2,
-      name: "Royal Heritage Hotel",
-      location: "Jaipur, Rajasthan",
-      price: "₹3,199",
-      rating: "4.7",
-      image:
-        "https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?auto=format&fit=crop&w=900&q=80",
-    },
-    {
-      id: 3,
-      name: "Lake View Resort",
-      location: "Udaipur, Rajasthan",
-      price: "₹3,899",
-      rating: "4.9",
-      image:
-        "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=900&q=80",
-    },
-  ];
+
 
   // ===================================================
   // SEARCH
   // ===================================================
 
   const handleSearch = () => {
+    setSearchError("");
+    const today = getMinDate();
+
+    if (checkIn && checkIn < today) {
+      setSearchError("Check-in date cannot be in the past.");
+      return;
+    }
+
+    if (!checkIn || !checkOut) {
+      setSearchError("Please select both check-in and check-out dates.");
+      return;
+    }
+
+    if (checkOut <= checkIn) {
+      setSearchError("Check-out date must be after check-in date.");
+      return;
+    }
+
+    const guestError = validateGuestSelection(guestData);
+    if (guestError) {
+      setSearchError(guestError);
+      return;
+    }
+
     const params = new URLSearchParams();
-
-    if (destination) {
-      params.set("destination", destination);
-    }
-
-    if (checkIn) {
-      params.set("checkIn", checkIn);
-    }
-
-    if (checkOut) {
-      params.set("checkOut", checkOut);
-    }
-
-    if (guests) {
-      params.set("guests", guests);
-    }
-
+    if (destination.trim()) params.set("destination", destination.trim());
+    params.set("checkIn", checkIn);
+    params.set("checkOut", checkOut);
+    params.set("rooms", String(guestData.rooms));
+    params.set("adults", String(guestData.adults));
+    params.set("children", String(guestData.children));
+    if (guestData.childAges.length) params.set("childAges", guestData.childAges.join(","));
     navigate(`/hotels?${params.toString()}`);
   };
 
@@ -179,6 +171,10 @@ function Home() {
 
             <Link to="/hotels">
               Hotels
+            </Link>
+
+            <Link to="/wishlist">
+              Wishlist
             </Link>
 
             <a href="#features">
@@ -303,10 +299,13 @@ function Home() {
 
               <input
                 type="date"
+                min={getMinDate()}
                 value={checkIn}
-                onChange={(e) =>
-                  setCheckIn(e.target.value)
-                }
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setCheckIn(value);
+                  if (checkOut && value >= checkOut) setCheckOut("");
+                }}
               />
 
             </div>
@@ -323,10 +322,10 @@ function Home() {
 
               <input
                 type="date"
+                min={checkIn ? tomorrowInput(checkIn) : tomorrowInput()}
+                disabled={!checkIn}
                 value={checkOut}
-                onChange={(e) =>
-                  setCheckOut(e.target.value)
-                }
+                onChange={(e) => setCheckOut(e.target.value)}
               />
 
             </div>
@@ -335,40 +334,13 @@ function Home() {
 
             {/* GUESTS */}
 
-            <div className="search-item guest-item">
+            <div className="search-item guest-item" style={{ position: "relative" }}>
 
               <label>
                 👥 Guests
               </label>
 
-              <select
-                value={guests}
-                onChange={(e) =>
-                  setGuests(e.target.value)
-                }
-              >
-
-                <option value="1">
-                  1 Guest
-                </option>
-
-                <option value="2">
-                  2 Guests
-                </option>
-
-                <option value="3">
-                  3 Guests
-                </option>
-
-                <option value="4">
-                  4 Guests
-                </option>
-
-                <option value="5">
-                  5+ Guests
-                </option>
-
-              </select>
+              <GuestSelector value={guestData} onChange={setGuestData} compact />
 
             </div>
 
@@ -382,6 +354,12 @@ function Home() {
             </button>
 
           </div>
+
+          {searchError && (
+            <div style={{ color: "#b91c1c", marginTop: "10px", fontSize: "13px", fontWeight: 600, background: "rgba(255,255,255,.92)", padding: "8px 12px", borderRadius: "8px" }}>
+              {searchError}
+            </div>
+          )}
 
         </div>
 
@@ -457,7 +435,7 @@ function Home() {
 
         <div className="hotel-grid">
 
-          {hotels.map((hotel) => (
+          {hotels.slice(0, 3).map((hotel) => (
 
             <div
               className="hotel-card"
@@ -705,6 +683,10 @@ function Home() {
 
             <Link to="/hotels">
               Hotels
+            </Link>
+
+            <Link to="/wishlist">
+              Wishlist
             </Link>
 
             <a href="#features">
@@ -1284,12 +1266,21 @@ function App() {
           element={<MyBookings />}
         />
 
+        <Route
+          path="/wishlist"
+          element={<Wishlist />}
+        />
+
         {/* MY ACCOUNT */}
 
         <Route
           path="/my-account"
           element={<MyAccount />}
         />
+
+        {/* ADMIN MODULE - customer UI remains unchanged */}
+        <Route path="/admin/login" element={<AdminLogin />} />
+        <Route path="/admin" element={<AdminDashboard />} />
 
       </Routes>
 

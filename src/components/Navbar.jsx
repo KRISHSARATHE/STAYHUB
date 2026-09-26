@@ -1,68 +1,83 @@
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import logo from "../assets/logo.svg";
 
 function Navbar() {
-  return (
-    <nav className="sticky top-0 z-50 bg-white shadow-md">
-      <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+  const navigate = useNavigate();
+  const [user, setUser] = useState(null);
 
-        {/* STAYHUB LOGO */}
-        <Link to="/" className="flex items-center">
+  useEffect(() => {
+    const loadUser = () => {
+      try {
+        setUser(JSON.parse(localStorage.getItem("stayhubCurrentUser") || "null"));
+      } catch {
+        setUser(null);
+      }
+    };
+
+    loadUser();
+    window.addEventListener("storage", loadUser);
+    window.addEventListener("stayhub:auth", loadUser);
+
+    return () => {
+      window.removeEventListener("storage", loadUser);
+      window.removeEventListener("stayhub:auth", loadUser);
+    };
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem("stayhubCurrentUser");
+    localStorage.removeItem("stayhubRememberMe");
+    window.dispatchEvent(new Event("stayhub:auth"));
+    setUser(null);
+    navigate("/");
+  };
+
+  return (
+    <nav className="navbar">
+      <div className="nav-container">
+        <Link to="/" className="logo" aria-label="STAYHUB Home">
           <img
             src={logo}
             alt="STAYHUB"
-            className="h-12 w-auto object-contain"
+            style={{ width: "150px", height: "auto", display: "block" }}
           />
         </Link>
 
-        {/* NAVIGATION */}
-        <div className="hidden md:flex items-center gap-8">
-          <Link
-            to="/"
-            className="text-gray-700 font-semibold hover:text-blue-600 transition"
-          >
-            Home
-          </Link>
-
-          <Link
-            to="/hotels"
-            className="text-gray-700 font-semibold hover:text-blue-600 transition"
-          >
-            Hotels
-          </Link>
-
-          <a
-            href="#features"
-            className="text-gray-700 font-semibold hover:text-blue-600 transition"
-          >
-            Features
-          </a>
-
-          <a
-            href="#about"
-            className="text-gray-700 font-semibold hover:text-blue-600 transition"
-          >
-            About
-          </a>
+        <div className="nav-links">
+          <Link to="/">Home</Link>
+          <Link to="/hotels">Hotels</Link>
+          <Link to="/wishlist">Wishlist</Link>
+          <a href="/#features">Features</a>
+          <a href="/#about">About</a>
         </div>
 
-        {/* BUTTONS */}
-        <div className="flex items-center gap-3">
-          <Link
-            to="/login"
-            className="px-5 py-2 rounded-lg border-2 border-blue-500 text-blue-600 font-semibold hover:bg-blue-50 transition"
-          >
-            Login
-          </Link>
-
-          <Link
-            to="/signup"
-            className="px-5 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 transition"
-          >
-            Sign Up
-          </Link>
+        <div className="nav-actions">
+          {user ? (
+            <>
+              <button
+                type="button"
+                className="login-btn"
+                onClick={() => navigate("/my-account")}
+                title="Open account"
+              >
+                👤 {user.name}
+              </button>
+              <button type="button" className="signup-btn" onClick={handleLogout}>
+                Logout
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="login-btn" onClick={() => navigate("/login")}>
+                Login
+              </button>
+              <button type="button" className="signup-btn" onClick={() => navigate("/signup")}>
+                Sign Up
+              </button>
+            </>
+          )}
         </div>
-
       </div>
     </nav>
   );

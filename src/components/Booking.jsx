@@ -1,213 +1,16 @@
+import { apiRequest } from "../utils/api";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 
 import stayhubLogo from "../assets/logo.svg";
+import GuestSelector from "./GuestSelector";
+import { getMinDate, tomorrowInput, calculateNights as getNights, validateGuestSelection, openInvoice } from "../utils/stayhub";
+import hotels from "../assets/hotels.js";
 // ======================================================
 // HOTEL DATA
 // ======================================================
 
-const hotels = [
-  {
-    id: 1,
-    name: "The Grand Palace",
-    location: "Indore, Madhya Pradesh",
-    price: 2499,
-    rating: 4.8,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1564501049412-61c2a3083791?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 2,
-    name: "Radisson Blu Hotel Indore",
-    location: "Indore, Madhya Pradesh",
-    price: 3999,
-    rating: 4.7,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1551882547-ff40c63fe5fa?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 3,
-    name: "Lemon Tree Hotel",
-    location: "Indore, Madhya Pradesh",
-    price: 2899,
-    rating: 4.5,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 4,
-    name: "Sayaji Hotel",
-    location: "Indore, Madhya Pradesh",
-    price: 3499,
-    rating: 4.6,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 5,
-    name: "Royal Heritage Hotel",
-    location: "Jaipur, Rajasthan",
-    price: 3199,
-    rating: 4.7,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1601918774946-25832a4be0d6?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 6,
-    name: "Rambagh Palace",
-    location: "Jaipur, Rajasthan",
-    price: 7999,
-    rating: 4.9,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 7,
-    name: "Taj Devi Ratn Resort",
-    location: "Jaipur, Rajasthan",
-    price: 6499,
-    rating: 4.8,
-    category: "Resort",
-    image:
-      "https://images.unsplash.com/photo-1584132967334-10e028bd69f7?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 8,
-    name: "The Oberoi Rajvilas",
-    location: "Jaipur, Rajasthan",
-    price: 8999,
-    rating: 4.9,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1544986581-efac024faf62?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 9,
-    name: "Lake View Resort",
-    location: "Udaipur, Rajasthan",
-    price: 3899,
-    rating: 4.9,
-    category: "Resort",
-    image:
-      "https://images.unsplash.com/photo-1564501049412-61c2a3083791?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 10,
-    name: "The Leela Palace Udaipur",
-    location: "Udaipur, Rajasthan",
-    price: 8499,
-    rating: 4.9,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1540541338287-41700207dee6?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 11,
-    name: "Trident Udaipur",
-    location: "Udaipur, Rajasthan",
-    price: 5299,
-    rating: 4.7,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1568084680786-a84f91d1153c?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 12,
-    name: "Grand Hyatt Goa",
-    location: "Goa, India",
-    price: 6999,
-    rating: 4.8,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1584132967334-10e028bd69f7?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 13,
-    name: "Ocean Breeze Resort",
-    location: "Goa, India",
-    price: 4299,
-    rating: 4.9,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1510414842594-a61c69b5ae57?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 14,
-    name: "Golden Tulip Goa",
-    location: "Goa, India",
-    price: 3699,
-    rating: 4.6,
-    category: "Resort",
-    image:
-      "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 15,
-    name: "Mountain Retreat",
-    location: "Manali, Himachal Pradesh",
-    price: 2799,
-    rating: 4.6,
-    category: "Resort",
-    image:
-      "https://images.unsplash.com/photo-1517825738774-7de9363ef735?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 16,
-    name: "Baragarh Resort & Spa",
-    location: "Manali, Himachal Pradesh",
-    price: 4599,
-    rating: 4.8,
-    category: "Resort",
-    image:
-      "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 17,
-    name: "Green Valley Hotel",
-    location: "Lonavala, Maharashtra",
-    price: 2199,
-    rating: 4.5,
-    category: "Budget",
-    image:
-      "https://images.unsplash.com/photo-1566665797739-1674de7a421a?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 18,
-    name: "Taj Mahal Palace",
-    location: "Mumbai, Maharashtra",
-    price: 7499,
-    rating: 4.9,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1564501049412-61c2a3083791?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 19,
-    name: "The Imperial Hotel",
-    location: "New Delhi, India",
-    price: 6799,
-    rating: 4.8,
-    category: "Luxury",
-    image:
-      "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=85",
-  },
-  {
-    id: 20,
-    name: "Budget Stay Inn",
-    location: "Bhopal, Madhya Pradesh",
-    price: 1599,
-    rating: 4.3,
-    category: "Budget",
-    image:
-      "https://images.unsplash.com/photo-1554995207-c18c203602cb?auto=format&fit=crop&w=1200&q=85",
-  },
-];
+;
 
 // ======================================================
 // BOOKING COMPONENT
@@ -221,7 +24,10 @@ function Booking() {
 
   const selectedCheckIn = searchParams.get("checkIn") || "";
   const selectedCheckOut = searchParams.get("checkOut") || "";
-  const selectedGuests = searchParams.get("guests") || "2";
+  const selectedRooms = Number(searchParams.get("rooms") || 1);
+  const selectedAdults = Number(searchParams.get("adults") || searchParams.get("guests") || 2);
+  const selectedChildren = Number(searchParams.get("children") || 0);
+  const selectedAges = (searchParams.get("childAges") || "").split(",").filter(Boolean).map(Number);
 
   const hotel = hotels.find((item) => item.id === hotelId);
 
@@ -233,8 +39,12 @@ function Booking() {
     phone: "",
     checkIn: selectedCheckIn,
     checkOut: selectedCheckOut,
-    guests: selectedGuests,
+    rooms: selectedRooms,
+    adults: selectedAdults,
+    children: selectedChildren,
+    childAges: Array.from({ length: selectedChildren }, (_, index) => selectedAges[index] ?? 8),
   });
+  const [verified, setVerified] = useState(false);
 
   const [confirmedBooking, setConfirmedBooking] = useState(null);
 
@@ -344,34 +154,18 @@ function Booking() {
   // CALCULATE NIGHTS
   // ====================================================
 
-  const calculateNights = () => {
-    if (!formData.checkIn || !formData.checkOut) {
-      return 0;
-    }
-
-    const start = new Date(formData.checkIn);
-    const end = new Date(formData.checkOut);
-
-    const difference =
-      end.getTime() - start.getTime();
-
-    return Math.ceil(
-      difference / (1000 * 60 * 60 * 24)
-    );
-  };
+  const calculateNights = () => getNights(formData.checkIn, formData.checkOut);
 
   const nights = calculateNights();
 
-  const totalAmount =
-    nights > 0
-      ? nights * hotel.price
-      : 0;
+  const roomSubtotal = nights > 0 ? nights * hotel.price * Number(formData.rooms || 1) : 0;
+  const totalAmount = roomSubtotal;
 
   // ====================================================
   // SUBMIT BOOKING
   // ====================================================
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     const savedUser = localStorage.getItem(
@@ -459,6 +253,17 @@ function Booking() {
       return;
     }
 
+    const guestError = validateGuestSelection(formData);
+    if (guestError) {
+      alert(guestError);
+      return;
+    }
+
+    if (!verified) {
+      alert("Please confirm that your booking details are correct.");
+      return;
+    }
+
     // ----------------------------------------------
     // BOOKING ID
     // ----------------------------------------------
@@ -506,52 +311,61 @@ function Booking() {
 
       checkOut: formData.checkOut,
 
-      guests: Number(formData.guests),
-
-      nights: nights,
-
+      rooms: Number(formData.rooms),
+      adults: Number(formData.adults),
+      children: Number(formData.children),
+      childAges: formData.childAges,
+      guests: Number(formData.adults) + Number(formData.children),
+      nights,
+      roomAmount: roomSubtotal,
+      serviceFee: 0,
+      tax: 0,
+      total: totalAmount,
       price: totalAmount,
-
       room: "Deluxe Room",
-
       status: "Confirmed",
 
       bookedAt:
         new Date().toISOString(),
     };
-
     // ----------------------------------------------
-    // GET OLD BOOKINGS
-    // ----------------------------------------------
-
-    const existingBookings =
-      JSON.parse(
-        localStorage.getItem(
-          "stayhubBookings"
-        )
-      ) || [];
-
-    // ----------------------------------------------
-    // SAVE BOOKING
+    // SAVE BOOKING TO POSTGRESQL API
     // ----------------------------------------------
 
-    const updatedBookings = [
-      ...existingBookings,
-      booking,
-    ];
+    try {
+      const result = await apiRequest("/bookings", {
+        method: "POST",
+        body: JSON.stringify({
+          ...booking,
+          userEmail: user.email || formData.email,
+          provider: user.provider || "email",
+          verified: true,
+        }),
+      });
 
-    localStorage.setItem(
-      "stayhubBookings",
-      JSON.stringify(
-        updatedBookings
-      )
-    );
+      const savedBooking = result.data || booking;
 
-    // ----------------------------------------------
-    // SHOW CONFIRMATION
-    // ----------------------------------------------
+      // Keep local copy for backward compatibility
+      const existingBookings =
+        JSON.parse(localStorage.getItem("stayhubBookings") || "[]");
 
-    setConfirmedBooking(booking);
+      const mergedBookings = [
+        ...existingBookings.filter((item) => item.id !== savedBooking.id),
+        savedBooking,
+      ];
+
+      localStorage.setItem(
+        "stayhubBookings",
+        JSON.stringify(mergedBookings)
+      );
+
+      setConfirmedBooking(savedBooking);
+    } catch (error) {
+      console.error("Booking API error:", error);
+      alert(error.message || "Booking could not be saved.");
+      return;
+    }
+
   };
 
   // ====================================================
@@ -728,6 +542,20 @@ function Booking() {
             </div>
 
             <div>
+              <small>ROOMS</small>
+              <strong style={{ display: "block", marginTop: "5px" }}>
+                {confirmedBooking.rooms}
+              </strong>
+            </div>
+
+            <div>
+              <small>ADULTS / CHILDREN</small>
+              <strong style={{ display: "block", marginTop: "5px" }}>
+                {confirmedBooking.adults} / {confirmedBooking.children}
+              </strong>
+            </div>
+
+            <div>
               <small>ROOM</small>
               <strong
                 style={{
@@ -791,6 +619,25 @@ function Booking() {
               flexWrap: "wrap",
             }}
           >
+            <button
+              type="button"
+              onClick={() => openInvoice(confirmedBooking)}
+              style={{
+                flex: "1",
+                minWidth: "180px",
+                textAlign: "center",
+                padding: "14px",
+                background: "#0f172a",
+                color: "#fff",
+                border: "none",
+                borderRadius: "10px",
+                fontWeight: "600",
+                cursor: "pointer",
+              }}
+            >
+              Download Bill (PDF)
+            </button>
+
             <Link
               to="/my-bookings"
               style={{
@@ -1082,8 +929,12 @@ function Booking() {
                 <input
                   type="date"
                   name="checkIn"
+                  min={getMinDate()}
                   value={formData.checkIn}
-                  onChange={handleChange}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setFormData((prev) => ({ ...prev, checkIn: value, checkOut: prev.checkOut && prev.checkOut > value ? prev.checkOut : "" }));
+                  }}
                   required
                   style={{
                     width: "100%",
@@ -1110,6 +961,8 @@ function Booking() {
                 <input
                   type="date"
                   name="checkOut"
+                  min={formData.checkIn ? tomorrowInput(formData.checkIn) : tomorrowInput()}
+                  disabled={!formData.checkIn}
                   value={formData.checkOut}
                   onChange={handleChange}
                   required
@@ -1127,59 +980,22 @@ function Booking() {
 
             {/* GUESTS */}
 
-            <div
-              style={{
-                marginTop: "18px",
-              }}
-            >
-              <label
-                style={{
-                  display: "block",
-                  marginBottom: "7px",
-                  fontWeight: "600",
-                }}
-              >
+            <div style={{ marginTop: "18px", position: "relative" }}>
+              <label style={{ display: "block", marginBottom: "7px", fontWeight: "600" }}>
                 Number of Guests
               </label>
-
-              <select
-                name="guests"
-                value={formData.guests}
-                onChange={handleChange}
-                style={{
-                  width: "100%",
-                  padding: "13px",
-                  border:
-                    "1px solid #d1d5db",
-                  borderRadius: "9px",
-                  boxSizing: "border-box",
-                }}
-              >
-                <option value="1">
-                  1 Guest
-                </option>
-
-                <option value="2">
-                  2 Guests
-                </option>
-
-                <option value="3">
-                  3 Guests
-                </option>
-
-                <option value="4">
-                  4 Guests
-                </option>
-
-                <option value="5">
-                  5 Guests
-                </option>
-
-                <option value="6">
-                  6 Guests
-                </option>
-              </select>
+              <div style={{ border: "1px solid #d1d5db", borderRadius: "9px", padding: "0 13px" }}>
+                <GuestSelector
+                  value={{ rooms: formData.rooms, adults: formData.adults, children: formData.children, childAges: formData.childAges }}
+                  onChange={(value) => setFormData((prev) => ({ ...prev, ...value }))}
+                />
+              </div>
             </div>
+
+            <label style={{ display: "flex", gap: "9px", alignItems: "flex-start", marginTop: "18px", color: "#475569", fontSize: "13px", lineHeight: 1.4 }}>
+              <input type="checkbox" checked={verified} onChange={(e) => setVerified(e.target.checked)} required style={{ marginTop: "3px" }} />
+              <span>I confirm that my guest, contact and stay details are correct.</span>
+            </label>
 
             {/* SUBMIT */}
 
@@ -1319,10 +1135,12 @@ function Booking() {
                   Guests
                 </span>
 
-                <strong>
-                  {formData.guests}
-                </strong>
+                <strong>{formData.adults + formData.children}</strong>
               </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Rooms</span><strong>{formData.rooms}</strong></div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Adults</span><strong>{formData.adults}</strong></div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Children</span><strong>{formData.children}</strong></div>
 
               <div
                 style={{

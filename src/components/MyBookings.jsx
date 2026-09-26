@@ -2,6 +2,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 
 import stayhubLogo from "../assets/logo.svg";
+import { openInvoice } from "../utils/stayhub";
+import { apiRequest } from "../utils/api";
 function MyBookings() {
   const navigate = useNavigate();
 
@@ -9,7 +11,6 @@ function MyBookings() {
   const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
-    // Get logged-in user
     const savedUser = localStorage.getItem("stayhubCurrentUser");
 
     if (!savedUser) {
@@ -21,58 +22,76 @@ function MyBookings() {
     const user = JSON.parse(savedUser);
     setCurrentUser(user);
 
-    // Get all bookings
-    const savedBookings =
-      JSON.parse(localStorage.getItem("stayhubBookings")) || [];
+    async function loadBookings() {
+      try {
+        const email = encodeURIComponent(user.email || "");
+        const result = await apiRequest(`/bookings?email=${email}`);
+        const userBookings = result.data || [];
 
-    // Show only current user's bookings
-    const userBookings = savedBookings.filter(
-      (booking) =>
-        booking.userId === user.id ||
-        booking.userId === user.loginId ||
-        booking.userEmail?.toLowerCase() === user.email?.toLowerCase()
-    );
+        setBookings(userBookings);
 
-    // Latest booking first
-    userBookings.reverse();
+        // Keep local copy for backward compatibility
+        localStorage.setItem(
+          "stayhubBookings",
+          JSON.stringify(userBookings)
+        );
+      } catch (error) {
+        console.error("Failed to load bookings:", error);
 
-    setBookings(userBookings);
+        // Fallback to local bookings if API is unavailable
+        const savedBookings =
+          JSON.parse(localStorage.getItem("stayhubBookings")) || [];
+
+        setBookings(
+          savedBookings
+            .filter(
+              (booking) =>
+                booking.userId === user.id ||
+                booking.userId === user.loginId ||
+                booking.userEmail?.toLowerCase() === user.email?.toLowerCase()
+            )
+            .reverse()
+        );
+      }
+    }
+
+    loadBookings();
   }, [navigate]);
 
   // Cancel booking
-  const handleCancel = (bookingId) => {
+  const handleCancel = async (bookingId) => {
     const confirmCancel = window.confirm(
       "Are you sure you want to cancel this booking?"
     );
 
     if (!confirmCancel) return;
 
-    const allBookings =
-      JSON.parse(localStorage.getItem("stayhubBookings")) || [];
+    try {
+      const result = await apiRequest(
+        `/bookings/${encodeURIComponent(bookingId)}/cancel`,
+        { method: "PATCH" }
+      );
 
-    const updatedBookings = allBookings.map((booking) =>
-      booking.id === bookingId
-        ? {
-            ...booking,
-            status: "Cancelled",
-            cancelledAt: new Date().toISOString(),
-          }
-        : booking
-    );
+      const updatedBooking = result.data;
 
-    localStorage.setItem(
-      "stayhubBookings",
-      JSON.stringify(updatedBookings)
-    );
+      setBookings((prev) => {
+        const updated = prev.map((booking) =>
+          booking.id === bookingId
+            ? updatedBooking || {
+                ...booking,
+                status: "Cancelled",
+                cancelledAt: new Date().toISOString(),
+              }
+            : booking
+        );
 
-    // Update page immediately
-    setBookings((prev) =>
-      prev.map((booking) =>
-        booking.id === bookingId
-          ? { ...booking, status: "Cancelled" }
-          : booking
-      )
-    );
+        localStorage.setItem("stayhubBookings", JSON.stringify(updated));
+        return updated;
+      });
+    } catch (error) {
+      console.error("Cancellation failed:", error);
+      alert(error.message || "Booking cancellation failed.");
+    }
   };
 
   // Format date
@@ -302,7 +321,7 @@ function MyBookings() {
                       <span>GUESTS</span>
 
                       <strong>
-                        {booking.guests || 1} Guests
+                        {booking.adults != null ? `${booking.adults} Adults${booking.children ? `, ${booking.children} Children` : ""}` : `${booking.guests || 1} Guests`}
                       </strong>
                     </div>
 
@@ -350,6 +369,14 @@ function MyBookings() {
                       Booking ID:{" "}
                       <strong>{booking.id}</strong>
                     </span>
+
+                    <button
+                      type="button"
+                      onClick={() => openInvoice(booking)}
+                      style={{ border: "1px solid #4f46e5", background: "#fff", color: "#4f46e5", borderRadius: "8px", padding: "10px 14px", fontWeight: 700, cursor: "pointer" }}
+                    >
+                      Download Bill
+                    </button>
 
                     {booking.status !== "Cancelled" && (
                       <button
