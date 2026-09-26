@@ -455,7 +455,7 @@ app.use((err, _req, res, _next) => {
 });
 
 ensureSchema().then(() => {
-  app.listen(port, () => console.log(`STAYHUB API running on http://localhost:${port}`));
+  app.listen(port, "0.0.0.0", () => console.log(`STAYHUB API running on 0.0.0.0:${port}`));
 }).catch((error) => {
   console.error("STAYHUB API could not start:", error.message);
   process.exit(1);
