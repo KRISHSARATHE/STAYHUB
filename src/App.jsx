@@ -7,9 +7,9 @@ import {
 } from "react-router-dom";
 
 import stayhubLogo from "./assets/logo.svg";
-import hotels from "./assets/hotels.js";
 
 import { useEffect, useState } from "react";
+import { fetchHotels } from "./utils/api";
 
 import Hotels from "./components/Hotels";
 import HotelDetails from "./components/HotelDetails";
@@ -37,6 +37,38 @@ function Home() {
   const [checkOut, setCheckOut] = useState(tomorrowInput());
   const [guestData, setGuestData] = useState({ rooms: 1, adults: 2, children: 0, childAges: [] });
   const [searchError, setSearchError] = useState("");
+
+  const [hotels, setHotels] = useState([]);
+
+  // ===================================================
+  // LOAD POPULAR HOTELS FROM POSTGRESQL API
+  // ===================================================
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadHotels() {
+      try {
+        const data = await fetchHotels();
+
+        if (active) {
+          setHotels(data);
+        }
+      } catch (error) {
+        console.error("Failed to load popular hotels:", error);
+
+        if (active) {
+          setHotels([]);
+        }
+      }
+    }
+
+    loadHotels();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // ===================================================
   // LOGIN USER

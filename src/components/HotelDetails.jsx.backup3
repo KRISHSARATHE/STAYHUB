@@ -1,0 +1,737 @@
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import GuestSelector from "./GuestSelector";
+import { getCurrentUser, getMinDate, tomorrowInput, validateGuestSelection } from "../utils/stayhub";
+import { apiRequest } from "../utils/api";
+
+import stayhubLogo from "../assets/logo.svg";
+import { fetchHotels } from "../utils/api";
+// ======================================================
+// HOTEL DATA
+// ======================================================
+
+;
+
+// ======================================================
+// HOTEL DETAILS
+// ======================================================
+
+function HotelDetails() {
+  const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  const [hotels, setHotels] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadHotels() {
+      try {
+        const data = await fetchHotels();
+
+        if (active) {
+          setHotels(data);
+        }
+      } catch (error) {
+        console.error("Failed to load hotel details:", error);
+
+        if (active) {
+          setHotels([]);
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadHotels();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const hotel = hotels.find((item) => item.id === Number(id));
+
+  const today = getMinDate();
+  const initialChildren = Number(searchParams.get("children") || 0);
+  const initialAges = (searchParams.get("childAges") || "").split(",").filter(Boolean).map(Number);
+  const [checkIn, setCheckIn] = useState(searchParams.get("checkIn") || today);
+  const [checkOut, setCheckOut] = useState(searchParams.get("checkOut") || tomorrowInput(searchParams.get("checkIn") || today));
+  const [guestData, setGuestData] = useState({
+    rooms: Number(searchParams.get("rooms") || 1),
+    adults: Number(searchParams.get("adults") || searchParams.get("guests") || 2),
+    children: initialChildren,
+    childAges: Array.from({ length: initialChildren }, (_, index) => initialAges[index] ?? 8),
+  });
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    async function loadWishlistState() {
+      const currentUser = getCurrentUser();
+
+      if (!currentUser?.email) {
+        setSaved(false);
+        return;
+      }
+
+      try {
+        const email = encodeURIComponent(currentUser.email);
+        const result = await apiRequest(`/wishlist?email=${email}`);
+        const wishlist = result.data || [];
+
+        setSaved(
+          wishlist.some(
+            (item) => Number(item.id) === Number(id)
+          )
+        );
+      } catch (error) {
+        console.error("Failed to load wishlist state:", error);
+        setSaved(false);
+      }
+    }
+
+    loadWishlistState();
+  }, [id]);
+
+  // ====================================================
+  // HOTEL LOADING
+  // ====================================================
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: "30px",
+          background: "#f8fafc",
+        }}
+      >
+        <div>
+          <h2>Loading hotel...</h2>
+          <p style={{ color: "#64748b" }}>
+            Please wait while we load the hotel details.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ====================================================
+  // HOTEL NOT FOUND
+  // ====================================================
+
+  if (!hotel) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: "30px",
+          background: "#f8fafc",
+        }}
+      >
+        <div>
+          <div style={{ fontSize: "70px" }}></div>
+
+          <h1>Hotel Not Found</h1>
+
+          <p
+            style={{
+              color: "#64748b",
+              marginBottom: "20px",
+            }}
+          >
+            The hotel you are looking for does not exist.
+          </p>
+
+          <Link
+            to="/hotels"
+            style={{
+              display: "inline-block",
+              padding: "12px 22px",
+              background: "#4f46e5",
+              color: "#fff",
+              borderRadius: "10px",
+              textDecoration: "none",
+              fontWeight: "600",
+            }}
+          >
+            ← Back to Hotels
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // ====================================================
+  // BOOKING
+  // ====================================================
+
+  const handleBooking = () => {
+    if (!getCurrentUser()) {
+      alert("Please login before booking a hotel.");
+      navigate("/login");
+      return;
+    }
+    if (!checkIn) return alert("Please select your check-in date.");
+    if (!checkOut) return alert("Please select your check-out date.");
+    if (checkOut <= checkIn) return alert("Check-out date must be after check-in date.");
+    const guestError = validateGuestSelection(guestData);
+    if (guestError) return alert(guestError);
+    const query = new URLSearchParams({ hotel: String(hotel.id), checkIn, checkOut, rooms: String(guestData.rooms), adults: String(guestData.adults), children: String(guestData.children) });
+    if (guestData.childAges.length) query.set("childAges", guestData.childAges.join(","));
+    navigate(`/booking?${query.toString()}`);
+  };
+
+  // ====================================================
+  // UI
+  // ====================================================
+
+  return (
+    <div className="hotel-details-page">
+
+      {/* ==================================================
+          TOP BAR
+      ================================================== */}
+
+      <header className="details-topbar">
+
+        <Link
+          to="/"
+          className="details-logo"
+        >
+          <img
+            src={stayhubLogo}
+            alt="STAYHUB"
+            style={{
+              height: "42px",
+              width: "auto",
+              objectFit: "contain",
+            }}
+          />
+        </Link>
+
+        <button
+          className="back-button"
+          onClick={() => navigate("/hotels")}
+        >
+          ← Back to Hotels
+        </button>
+
+      </header>
+
+      {/* ==================================================
+          MAIN
+      ================================================== */}
+
+      <main className="details-container">
+
+        {/* =================================================
+            HOTEL IMAGE
+        ================================================= */}
+
+        <div className="details-image" style={{ position: "relative" }}>
+          <img
+            src={hotel.image}
+            alt={hotel.name}
+            loading="eager"
+            decoding="async"
+          />
+          <button
+            type="button"
+            onClick={async () => {
+              const currentUser = getCurrentUser();
+              if (!currentUser) { navigate("/login"); return; }
+
+              try {
+                const email = encodeURIComponent(currentUser.email);
+
+                if (saved) {
+                  await apiRequest(
+                    `/wishlist/${hotel.id}?email=${email}`,
+                    { method: "DELETE" }
+                  );
+                  setSaved(false);
+                } else {
+                  await apiRequest("/wishlist", {
+                    method: "POST",
+                    body: JSON.stringify({
+                      email: currentUser.email,
+                      hotelId: Number(hotel.id),
+                    }),
+                  });
+                  setSaved(true);
+                }
+
+                window.dispatchEvent(
+                  new Event("stayhub-wishlist-change")
+                );
+              } catch (error) {
+                console.error("Wishlist update failed:", error);
+              }
+            }}
+            aria-label={saved ? "Remove from wishlist" : "Add to wishlist"}
+            style={{ position: "absolute", top: "18px", right: "18px", width: "46px", height: "46px", borderRadius: "50%", border: 0, background: "rgba(255,255,255,.95)", cursor: "pointer", fontSize: "23px", zIndex: 2 }}
+          >{saved ? "♥" : "♡"}</button>
+
+          <span className="details-category">
+            {hotel.category}
+          </span>
+
+          <div
+            style={{
+              position: "absolute",
+              bottom: "18px",
+              left: "18px",
+              background: "rgba(0,0,0,0.65)",
+              color: "#fff",
+              padding: "8px 14px",
+              borderRadius: "20px",
+              fontSize: "13px",
+              backdropFilter: "blur(5px)",
+            }}
+          >
+            📷 Hotel View
+          </div>
+
+        </div>
+
+        {/* =================================================
+            CONTENT
+        ================================================= */}
+
+        <div className="details-main">
+
+          {/* =================================================
+              LEFT CONTENT
+          ================================================= */}
+
+          <div className="details-content">
+
+            {/* LOCATION */}
+
+            <p className="details-location">
+              📍 {hotel.location}
+            </p>
+
+            {/* HOTEL NAME */}
+
+            <h1 className="details-heading">
+              {hotel.name}
+            </h1>
+
+            {/* RATING */}
+
+            <div className="details-rating">
+
+              <span
+                style={{
+                  background: "#fef3c7",
+                  color: "#92400e",
+                  padding: "5px 10px",
+                  borderRadius: "8px",
+                  fontWeight: "700",
+                }}
+              >
+                ⭐ {hotel.rating}
+              </span>
+
+              <span>
+                ★★★★★
+              </span>
+
+              <span>
+                Excellent
+              </span>
+
+            </div>
+
+            {/* DESCRIPTION */}
+
+            <p className="details-description">
+              {hotel.description}
+            </p>
+
+            {/* =================================================
+                AMENITIES
+            ================================================= */}
+
+            <section className="details-section">
+
+              <h2>
+                Hotel Amenities
+              </h2>
+
+              <div className="amenities-grid">
+
+                {(hotel.amenities || [
+                  "Free Wi-Fi",
+                  "Comfortable Rooms",
+                  "24/7 Reception",
+                  "Room Service",
+                  "Air Conditioning",
+                  "Secure Stay",
+                ]).map(
+                  (amenity) => (
+                    <div
+                      className="amenity"
+                      key={amenity}
+                    >
+                      <span
+                        style={{
+                          color: "#16a34a",
+                          fontWeight: "800",
+                          marginRight: "6px",
+                        }}
+                      >
+                        ✓
+                      </span>
+
+                      {amenity}
+                    </div>
+                  )
+                )}
+
+              </div>
+
+            </section>
+
+            {/* =================================================
+                STAY HIGHLIGHTS
+            ================================================= */}
+
+            <section className="details-section">
+
+              <h2>
+                Why stay here?
+              </h2>
+
+              <div
+                style={{
+                  display: "grid",
+                  gap: "15px",
+                }}
+              >
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "14px",
+                    padding: "15px",
+                    background: "#f8fafc",
+                    borderRadius: "12px",
+                  }}
+                >
+
+                  <span
+                    style={{
+                      fontSize: "25px",
+                    }}
+                  >
+                    🛏️
+                  </span>
+
+                  <div>
+                    <strong>
+                      Comfortable Rooms
+                    </strong>
+
+                    <p
+                      style={{
+                        margin:
+                          "5px 0 0",
+                        color:
+                          "#64748b",
+                        fontSize:
+                          "14px",
+                      }}
+                    >
+                      Comfortable rooms
+                      designed for a
+                      relaxing stay.
+                    </p>
+                  </div>
+
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "14px",
+                    padding: "15px",
+                    background: "#f8fafc",
+                    borderRadius: "12px",
+                  }}
+                >
+
+                  <span
+                    style={{
+                      fontSize: "25px",
+                    }}
+                  >
+                    🧹
+                  </span>
+
+                  <div>
+                    <strong>
+                      Clean & Comfortable
+                    </strong>
+
+                    <p
+                      style={{
+                        margin:
+                          "5px 0 0",
+                        color:
+                          "#64748b",
+                        fontSize:
+                          "14px",
+                      }}
+                    >
+                      A clean and
+                      comfortable
+                      environment for
+                      guests.
+                    </p>
+                  </div>
+
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "14px",
+                    padding: "15px",
+                    background: "#f8fafc",
+                    borderRadius: "12px",
+                  }}
+                >
+
+                  <span
+                    style={{
+                      fontSize: "25px",
+                    }}
+                  >
+                    🔒
+                  </span>
+
+                  <div>
+                    <strong>
+                      Secure Booking
+                    </strong>
+
+                    <p
+                      style={{
+                        margin:
+                          "5px 0 0",
+                        color:
+                          "#64748b",
+                        fontSize:
+                          "14px",
+                      }}
+                    >
+                      Your booking
+                      details are
+                      securely stored
+                      in STAYHUB.
+                    </p>
+                  </div>
+
+                </div>
+
+              </div>
+
+            </section>
+
+          </div>
+
+          {/* =================================================
+              BOOKING CARD
+          ================================================= */}
+
+          <aside className="booking-card">
+
+            <p
+              style={{
+                marginBottom: "5px",
+                color: "#64748b",
+              }}
+            >
+              Starting from
+            </p>
+
+            {/* PRICE */}
+
+            <div className="details-price">
+
+              ₹
+              {hotel.price.toLocaleString(
+                "en-IN"
+              )}
+
+              <span>
+                / night
+              </span>
+
+            </div>
+
+            {/* =================================================
+                CHECK-IN
+            ================================================= */}
+
+            <div className="booking-field">
+
+              <label htmlFor="checkIn">
+                Check-in
+              </label>
+
+              <input
+                id="checkIn"
+                type="date"
+                min={today}
+                value={checkIn}
+                onChange={(e) => {
+                  const value =
+                    e.target.value;
+
+                  setCheckIn(value);
+
+                  // Reset checkout if invalid
+                  if (
+                    checkOut &&
+                    new Date(value) >=
+                      new Date(checkOut)
+                  ) {
+                    setCheckOut("");
+                  }
+                }}
+              />
+
+            </div>
+
+            {/* =================================================
+                CHECK-OUT
+            ================================================= */}
+
+            <div className="booking-field">
+
+              <label htmlFor="checkOut">
+                Check-out
+              </label>
+
+              <input
+                id="checkOut"
+                type="date"
+                min={checkIn ? tomorrowInput(checkIn) : tomorrowInput()}
+                disabled={!checkIn}
+                value={checkOut}
+                onChange={(e) =>
+                  setCheckOut(
+                    e.target.value
+                  )
+                }
+              />
+
+            </div>
+
+            {/* =================================================
+                GUESTS
+            ================================================= */}
+
+            <div className="booking-field" style={{ position: "relative" }}>
+              <label>Guests</label>
+              <GuestSelector value={guestData} onChange={setGuestData} />
+            </div>
+
+            {/* =================================================
+                PRICE INFORMATION
+            ================================================= */}
+
+            <div
+              style={{
+                marginTop: "18px",
+                paddingTop: "15px",
+                borderTop:
+                  "1px solid #e5e7eb",
+              }}
+            >
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent:
+                    "space-between",
+                  marginBottom: "8px",
+                  fontSize: "14px",
+                }}
+              >
+
+                <span>
+                  Room price
+                </span>
+
+                <strong>
+                  ₹
+                  {hotel.price.toLocaleString(
+                    "en-IN"
+                  )}
+                  /night
+                </strong>
+
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent:
+                    "space-between",
+                  fontSize: "14px",
+                }}
+              >
+
+                <span>Guests</span>
+                <strong>{guestData.rooms} Room{guestData.rooms !== 1 ? "s" : ""}, {guestData.adults} Adult{guestData.adults !== 1 ? "s" : ""}{guestData.children ? `, ${guestData.children} Child${guestData.children !== 1 ? "ren" : ""}` : ""}</strong>
+
+              </div>
+
+            </div>
+
+            {/* =================================================
+                BOOK BUTTON
+            ================================================= */}
+
+            <button
+              className="book-now-button"
+              onClick={handleBooking}
+            >
+              Book Now →
+            </button>
+
+            {/* SECURITY */}
+
+            <p className="secure-text">
+              🔒 Secure booking • No payment
+              required now
+            </p>
+
+          </aside>
+
+        </div>
+
+      </main>
+
+    </div>
+  );
+}
+
+export default HotelDetails;

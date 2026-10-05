@@ -129,7 +129,7 @@ const hotels = [
     price: 3500,
     rating: 4.2,
     image:
-      "https://images.unsplash.com/photo-1560200353-ce0a0e4b2d6e?w=1400&q=85",
+      "https://images.unsplash.com/photo-1566073771259-6a8506099945?w=1400&q=85",
     description:
       "Affordable and comfortable accommodation suitable for students and business travellers.",
   },
@@ -153,7 +153,7 @@ const hotels = [
     price: 2500,
     rating: 4.0,
     image:
-      "https://images.unsplash.com/photo-1594560913095-0dcb7f3f1a9e?w=1400&q=85",
+      "https://images.unsplash.com/photo-1551882547-ff40c63fe5fa?w=1400&q=85",
     description:
       "Affordable hotel with modern rooms and essential amenities.",
   },

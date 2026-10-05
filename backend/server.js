@@ -6,6 +6,7 @@ import jwt from "jsonwebtoken";
 import pg from "pg";
 import crypto from "node:crypto";
 import hotels from "../src/assets/hotels.js";
+import { searchAvailability, mapAvailabilityResponse, checkRate, createBooking } from "./hotelbeds.js";
 
 dotenv.config();
 
@@ -53,6 +54,12 @@ const mapHotel = (row) => ({
 });
 
 const mapBooking = (row) => ({
+  couponCode: row.coupon_code || "",
+  discount: Number(row.discount || 0),
+  paymentMethod: row.payment_method || "Demo Payment",
+  paymentStatus: row.payment_status || "Pending",
+  paidAt: row.paid_at || null,
+
   id: row.id,
   userId: row.user_id,
   userEmail: row.user_email,
@@ -99,7 +106,25 @@ function requireAdmin(req, res, next) {
 }
 
 async function ensureSchema() {
+  // Automatic booking schema migration.
+  // Keeps demo/production databases compatible with the current booking API.
+  await pool.query(`
+    ALTER TABLE bookings
+      ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(50) DEFAULT '',
+      ADD COLUMN IF NOT EXISTS discount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40) NOT NULL DEFAULT 'Demo Payment',
+      ADD COLUMN IF NOT EXISTS payment_status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+      ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ
+  `);
+
   await query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`);
+
+  // Verification migration for existing STAYHUB databases.
+  await query(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS verification_token TEXT,
+      ADD COLUMN IF NOT EXISTS verification_expires_at TIMESTAMPTZ
+  `);
   await query(`
     CREATE TABLE IF NOT EXISTS users (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,6 +134,8 @@ async function ensureSchema() {
       password_hash TEXT,
       provider VARCHAR(30) NOT NULL DEFAULT 'email',
       verified BOOLEAN NOT NULL DEFAULT FALSE,
+      verification_token TEXT,
+      verification_expires_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -236,6 +263,55 @@ app.get("/api/hotels", async (req, res) => {
   }
 });
 
+
+app.get("/api/hotelbeds/availability", async (req, res) => {
+  try {
+    const {
+      checkIn,
+      checkOut,
+      adults = 2,
+      children = 0,
+      childAges = "",
+      rooms = 1,
+      hotelCodes = "",
+    } = req.query;
+
+    const parsedChildAges = String(childAges)
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isFinite(value));
+
+    const parsedHotelCodes = String(hotelCodes)
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isInteger(value) && value > 0);
+
+    const result = await searchAvailability({
+      checkIn: String(checkIn || ""),
+      checkOut: String(checkOut || ""),
+      adults: Number(adults),
+      children: Number(children),
+      childAges: parsedChildAges,
+      rooms: Number(rooms),
+      hotelCodes: parsedHotelCodes,
+    });
+
+    res.json({
+      success: true,
+      source: "hotelbeds",
+      data: mapAvailabilityResponse(result),
+    });
+  } catch (error) {
+    console.error("Hotelbeds availability error:", error.message);
+
+    res.status(error.statusCode || 500).json({
+      success: false,
+      source: "hotelbeds",
+      message: error.message,
+    });
+  }
+});
+
 app.get("/api/hotels/:id", async (req, res) => {
   try {
     const result = await query("SELECT * FROM hotels WHERE id=$1 AND is_active=TRUE", [Number(req.params.id)]);
@@ -244,21 +320,186 @@ app.get("/api/hotels/:id", async (req, res) => {
   } catch (error) { res.status(500).json({ message: "Failed to load hotel.", error: error.message }); }
 });
 
+
+
+// STAYHUB_FINAL_ADMIN_LOGIN
+app.post("/api/admin/login", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+
+    if (email !== adminEmail || password !== adminPassword) {
+      return res.status(401).json({
+        message: "Invalid admin email or password"
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        id: "admin",
+        userId: "admin",
+        email: adminEmail,
+        role: "admin",
+        isAdmin: true
+      },
+      jwtSecret,
+      { expiresIn: "24h" }
+    );
+
+    res.json({
+      success: true,
+      token,
+      accessToken: token,
+      data: {
+        token,
+        accessToken: token,
+        user: {
+          id: "admin",
+          email: adminEmail,
+          name: "STAYHUB Admin",
+          role: "admin",
+          isAdmin: true
+        }
+      },
+      user: {
+        id: "admin",
+        email: adminEmail,
+        name: "STAYHUB Admin",
+        role: "admin",
+        isAdmin: true
+      }
+    });
+  } catch (err) {
+    console.error("Admin login:", err);
+    res.status(500).json({ message: "Admin login failed" });
+  }
+});
+
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, phone, password } = req.body || {};
-    if (!name || !email || !password) return res.status(400).json({ message: "Name, email and password are required." });
-    if (String(password).length < 6) return res.status(400).json({ message: "Password must be at least 6 characters." });
-    const passwordHash = await bcrypt.hash(String(password), 12);
-    const user = await query(
-      `INSERT INTO users (name,email,phone,password_hash,provider,verified) VALUES ($1,$2,$3,$4,'email',TRUE) RETURNING *`,
-      [String(name).trim(), String(email).trim().toLowerCase(), String(phone || "").trim(), passwordHash],
+
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        message: "Name, email and password are required.",
+      });
+    }
+
+    if (String(password).length < 6) {
+      return res.status(400).json({
+        message: "Password must be at least 6 characters.",
+      });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    const existing = await query(
+      "SELECT id, verified FROM users WHERE email=$1",
+      [normalizedEmail],
     );
+
+    if (existing.rowCount) {
+      if (!existing.rows[0].verified) {
+        return res.status(409).json({
+          message: "An account with this email exists but is not verified.",
+          verificationRequired: true,
+        });
+      }
+
+      return res.status(409).json({
+        message: "An account with this email already exists.",
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(String(password), 12);
+    const verificationToken = crypto.randomBytes(32).toString("hex");
+
+    const user = await query(
+      `INSERT INTO users
+        (name,email,phone,password_hash,provider,verified,verification_token,verification_expires_at)
+       VALUES ($1,$2,$3,$4,'email',FALSE,$5,NOW() + INTERVAL '30 minutes')
+       RETURNING *`,
+      [
+        String(name).trim(),
+        normalizedEmail,
+        String(phone || "").trim(),
+        passwordHash,
+        verificationToken,
+      ],
+    );
+
     const row = user.rows[0];
-    res.status(201).json({ data: sanitizeUser(row), token: makeToken({ sub: row.id, role: "user", email: row.email }) });
+
+    // Development response until an email provider is connected.
+    const verificationUrl =
+      `/api/auth/verify/${encodeURIComponent(verificationToken)}`;
+
+    res.status(201).json({
+      data: sanitizeUser(row),
+      verificationRequired: true,
+      message: "Registration successful. Please verify your account.",
+      verificationUrl,
+      verificationToken,
+    });
   } catch (error) {
-    if (error.code === "23505") return res.status(409).json({ message: "An account with this email already exists." });
-    res.status(500).json({ message: "Registration failed.", error: error.message });
+    if (error.code === "23505") {
+      return res.status(409).json({
+        message: "An account with this email already exists.",
+      });
+    }
+
+    res.status(500).json({
+      message: "Registration failed.",
+      error: error.message,
+    });
+  }
+});
+app.get("/api/auth/verify/:token", async (req, res) => {
+  try {
+    const token = String(req.params.token || "").trim();
+
+    if (!token) {
+      return res.status(400).json({
+        message: "Verification token is required.",
+      });
+    }
+
+    const result = await query(
+      `SELECT *
+       FROM users
+       WHERE verification_token=$1
+         AND verification_expires_at > NOW()
+       LIMIT 1`,
+      [token],
+    );
+
+    if (!result.rowCount) {
+      return res.status(400).json({
+        message: "Verification link is invalid or expired.",
+      });
+    }
+
+    const row = result.rows[0];
+
+    const updated = await query(
+      `UPDATE users
+       SET verified=TRUE,
+           verification_token=NULL,
+           verification_expires_at=NULL
+       WHERE id=$1
+       RETURNING *`,
+      [row.id],
+    );
+
+    res.json({
+      message: "Email verification successful. Your STAYHUB account is now verified.",
+      data: sanitizeUser(updated.rows[0]),
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Verification failed.",
+      error: error.message,
+    });
   }
 });
 
@@ -269,6 +510,14 @@ app.post("/api/auth/login", async (req, res) => {
     if (!result.rowCount || !result.rows[0].password_hash) return res.status(401).json({ message: "Invalid email or password." });
     const ok = await bcrypt.compare(String(password || ""), result.rows[0].password_hash);
     if (!ok) return res.status(401).json({ message: "Invalid email or password." });
+
+    if (!result.rows[0].verified) {
+      return res.status(403).json({
+        message: "Please verify your account before logging in.",
+        verificationRequired: true,
+      });
+    }
+
     const row = result.rows[0];
     res.json({ data: sanitizeUser(row), token: makeToken({ sub: row.id, role: "user", email: row.email }) });
   } catch (error) { res.status(500).json({ message: "Login failed.", error: error.message }); }
@@ -322,12 +571,107 @@ app.post("/api/bookings", async (req, res) => {
     const roomAmount = nights * Number(hotel.price) * rooms;
     const serviceFee = Number(body.serviceFee || 0);
     const tax = Number(body.tax || 0);
-    const total = roomAmount + serviceFee + tax;
+
+    // -------------------------------------------------------
+    // COUPON / DISCOUNT
+    // -------------------------------------------------------
+    const couponCode = String(body.couponCode || "").trim().toUpperCase();
+
+    const coupons = {
+      STAY10: {
+        type: "percent",
+        value: 10,
+        label: "10% OFF",
+      },
+      STAY500: {
+        type: "flat",
+        value: 500,
+        label: "₹500 OFF",
+      },
+      WELCOME15: {
+        type: "percent",
+        value: 15,
+        label: "15% OFF",
+      },
+    };
+
+    let discount = 0;
+
+    if (couponCode && coupons[couponCode]) {
+      const coupon = coupons[couponCode];
+
+      if (coupon.type === "percent") {
+        discount = roomAmount * coupon.value / 100;
+      } else {
+        discount = coupon.value;
+      }
+    }
+
+    discount = Math.min(Math.max(Number(discount.toFixed(2)), 0), roomAmount);
+
+    // -------------------------------------------------------
+    // PAYMENT
+    // -------------------------------------------------------
+    const allowedPaymentMethods = [
+      "UPI",
+      "Card",
+      "Cash at Hotel",
+      "Demo Payment",
+    ];
+
+    const paymentMethod = allowedPaymentMethods.includes(
+      String(body.paymentMethod || "")
+    )
+      ? String(body.paymentMethod)
+      : "Demo Payment";
+
+    // College/demo payment flow.
+    // Real gateway can be connected later.
+    const paymentStatus = "Paid";
+    const paidAt = new Date();
+
+    const total = Math.max(
+      0,
+      roomAmount + serviceFee + tax - discount
+    );
 
     const result = await client.query(
-      `INSERT INTO bookings (id,user_id,hotel_id,guest_name,phone,check_in,check_out,rooms,adults,children,child_ages,nights,room,room_amount,service_fee,tax,total,status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'Confirmed') RETURNING *`,
-      [id, user.id, hotelId, String(body.name).trim(), String(body.phone).trim(), body.checkIn, body.checkOut, rooms, adults, children, JSON.stringify(childAges), nights, body.room || "Deluxe Room", roomAmount, serviceFee, tax, total],
+      `INSERT INTO bookings (
+        id,user_id,hotel_id,guest_name,phone,check_in,check_out,
+        rooms,adults,children,child_ages,nights,room,
+        room_amount,service_fee,tax,total,status,
+        coupon_code,discount,payment_method,payment_status,paid_at
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,
+        $8,$9,$10,$11,$12,$13,
+        $14,$15,$16,$17,'Confirmed',
+        $18,$19,$20,$21,$22
+      ) RETURNING *`,
+      [
+        id,
+        user.id,
+        hotelId,
+        String(body.name).trim(),
+        String(body.phone).trim(),
+        body.checkIn,
+        body.checkOut,
+        rooms,
+        adults,
+        children,
+        JSON.stringify(childAges),
+        nights,
+        body.room || "Deluxe Room",
+        roomAmount,
+        serviceFee,
+        tax,
+        total,
+        couponCode,
+        discount,
+        paymentMethod,
+        paymentStatus,
+        paidAt,
+      ],
     );
     await client.query("COMMIT");
 
@@ -373,10 +717,55 @@ app.get("/api/wishlist", async (req, res) => {
 app.post("/api/wishlist", async (req, res) => {
   try {
     const { email, name, phone, hotelId } = req.body || {};
-    const user = await getOrCreateUser({ email, name, phone });
-    await query(`INSERT INTO wishlists(user_id,hotel_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, [user.id, Number(hotelId)]);
-    res.status(201).json({ message: "Hotel saved to wishlist." });
-  } catch (error) { res.status(400).json({ message: error.message || "Wishlist update failed." }); }
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const numericHotelId = Number(hotelId);
+
+    if (!normalizedEmail) {
+      return res.status(400).json({ message: "User email is required." });
+    }
+
+    if (!Number.isInteger(numericHotelId) || numericHotelId <= 0) {
+      return res.status(400).json({ message: "Valid hotel ID is required." });
+    }
+
+    const hotelResult = await query(
+      "SELECT id, name FROM hotels WHERE id=$1 AND is_active=TRUE",
+      [numericHotelId]
+    );
+
+    if (!hotelResult.rowCount) {
+      return res.status(404).json({ message: "Hotel not found." });
+    }
+
+    const user = await getOrCreateUser({
+      email: normalizedEmail,
+      name: name || "Guest",
+      phone: phone || "",
+    });
+
+    const result = await query(
+      `INSERT INTO wishlists(user_id, hotel_id)
+       VALUES($1,$2)
+       ON CONFLICT(user_id, hotel_id)
+       DO UPDATE SET created_at = wishlists.created_at
+       RETURNING user_id, hotel_id, created_at`,
+      [user.id, numericHotelId]
+    );
+
+    res.status(201).json({
+      message: "Hotel saved to wishlist.",
+      data: {
+        hotelId: numericHotelId,
+        userId: user.id,
+        alreadySaved: result.rowCount === 0,
+      },
+    });
+  } catch (error) {
+    console.error("WISHLIST ADD ERROR:", error);
+    res.status(400).json({
+      message: error.message || "Wishlist update failed.",
+    });
+  }
 });
 
 app.delete("/api/wishlist/:hotelId", async (req, res) => {
@@ -455,7 +844,255 @@ app.use((err, _req, res, _next) => {
 });
 
 ensureSchema().then(() => {
-  app.listen(port, "0.0.0.0", () => console.log(`STAYHUB API running on 0.0.0.0:${port}`));
+  
+/*
+ * STAYHUB Hotelbeds live-search bridge.
+ * Local hotel records remain the source for UI/content.
+ * Hotelbeds supplies live availability/rates only for mapped hotelbeds_code rows.
+ */
+
+app.get("/api/hotelbeds/search", async (req, res) => {
+  try {
+    const {
+      city = "",
+      destination = "",
+      checkIn,
+      checkOut,
+      adults = 2,
+      children = 0,
+      childAges = "",
+      rooms = 1,
+    } = req.query;
+
+    /*
+      IMPORTANT:
+      If a city/destination is supplied, NEVER fall back to
+      broad India inventory. Search only Hotelbeds codes mapped
+      to that city in the STAYHUB database.
+    */
+    const requestedCity = String(city || destination || "").trim();
+
+    let hotelCodes = [];
+
+    if (requestedCity) {
+      const cityKey = requestedCity.toLowerCase();
+
+      const cityResult = await query(
+        `
+        SELECT hotelbeds_code
+        FROM hotels
+        WHERE is_active = TRUE
+          AND hotelbeds_code IS NOT NULL
+          AND (
+            LOWER(TRIM(COALESCE(hotelbeds_city, ''))) = $1
+            OR LOWER(TRIM(COALESCE(location, ''))) = $1
+            OR LOWER(TRIM(SPLIT_PART(COALESCE(location, ''), ',', 1))) = $1
+          )
+        ORDER BY id
+        `,
+        [cityKey]
+      );
+
+      hotelCodes = cityResult.rows
+        .map((r) => Number(r.hotelbeds_code))
+        .filter(Number.isInteger);
+
+      console.log(
+        `[Hotelbeds city search] ${requestedCity} -> ${hotelCodes.length} mapped hotel(s)`
+      );
+
+      if (!hotelCodes.length) {
+        return res.json({
+          success: true,
+          source: "hotelbeds",
+          city: requestedCity,
+          hotelbedsMapped: 0,
+          data: [],
+        });
+      }
+    } else {
+      /*
+        Hotelbeds requires at least one Availability filter.
+        For a broad STAYHUB search we therefore use the Hotelbeds
+        codes already mapped in our PostgreSQL database.
+
+        This avoids sending an empty `hotels` filter and avoids
+        the invalid "unique filter" error.
+      */
+      const allHotelsResult = await query(
+        `
+        SELECT DISTINCT hotelbeds_code
+        FROM hotels
+        WHERE is_active = TRUE
+          AND hotelbeds_code IS NOT NULL
+        ORDER BY hotelbeds_code
+        `
+      );
+
+      hotelCodes = allHotelsResult.rows
+        .map((r) => Number(r.hotelbeds_code))
+        .filter(Number.isInteger);
+
+      console.log(
+        `[Hotelbeds broad search] using ${hotelCodes.length} mapped hotel(s)`
+      );
+
+      if (!hotelCodes.length) {
+        return res.json({
+          success: true,
+          source: "hotelbeds",
+          city: "",
+          hotelbedsMapped: 0,
+          data: [],
+        });
+      }
+    }
+
+    if (!checkIn || !checkOut) {
+      return res.json({
+        success: true,
+        source: "hotelbeds",
+        city: requestedCity,
+        hotelbedsMapped: hotelCodes.length,
+        data: [],
+      });
+    }
+
+    const parsedChildAges = String(childAges)
+      .split(",")
+      .map((v) => Number(v.trim()))
+      .filter(Number.isFinite);
+
+    const result = await searchAvailability({
+      checkIn: String(checkIn),
+      checkOut: String(checkOut),
+      adults: Number(adults),
+      children: Number(children),
+      childAges: parsedChildAges,
+      rooms: Number(rooms),
+
+      // If city is specified, this is ALWAYS a restricted list.
+      hotelCodes,
+    });
+
+    const mapped = mapAvailabilityResponse(result);
+    const liveRows = Array.isArray(mapped)
+      ? mapped
+      : Array.isArray(mapped?.data)
+        ? mapped.data
+        : [];
+
+    /*
+      Extra safety:
+      Even if Hotelbeds unexpectedly returns something outside the
+      requested list, discard it before sending it to STAYHUB.
+    */
+    const allowedCodes = new Set(hotelCodes.map(Number));
+
+    const filteredRows = requestedCity
+      ? liveRows.filter((h) => allowedCodes.has(Number(h.hotelbedsCode)))
+      : liveRows;
+
+    const returnedCodes = filteredRows
+      .map((h) => Number(h.hotelbedsCode))
+      .filter(Number.isInteger);
+
+    let dbRows = { rows: [] };
+
+    if (returnedCodes.length) {
+      dbRows = await query(
+        `
+        SELECT
+          id,
+          hotelbeds_code,
+          name,
+          location,
+          category,
+          image,
+          description,
+          rating
+        FROM hotels
+        WHERE hotelbeds_code = ANY($1::int[])
+        `,
+        [returnedCodes]
+      );
+    }
+
+    const byCode = new Map(
+      dbRows.rows.map((r) => [Number(r.hotelbeds_code), r])
+    );
+
+    const merged = filteredRows.map((h) => {
+      const local = byCode.get(Number(h.hotelbedsCode));
+
+      return {
+        ...h,
+        id: local?.id ?? `hb-${h.hotelbedsCode}`,
+        name: local?.name || h.name,
+        location: local?.location || h.location,
+        category: local?.category || h.category,
+        image: local?.image || h.image || "",
+        description: local?.description || h.description || "",
+        rating: Number(local?.rating ?? h.rating ?? 0),
+        price: Number(h.minRate || h.price || 0),
+      };
+    });
+
+    return res.json({
+      success: true,
+      source: "hotelbeds",
+      city: requestedCity,
+      hotelbedsMapped: hotelCodes.length,
+      data: merged,
+    });
+  } catch (error) {
+    console.error("Hotelbeds search error:", error.message);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      source: "hotelbeds",
+      message: error.message,
+    });
+  }
+});
+
+app.post("/api/hotelbeds/checkrate", async (req, res) => {
+  try {
+    const { rateKey } = req.body || {};
+    if (!rateKey) {
+      return res.status(400).json({
+        success: false,
+        message: "rateKey is required.",
+      });
+    }
+
+    const result = await checkRate(rateKey);
+    return res.json({ success: true, source: "hotelbeds", data: result });
+  } catch (error) {
+    console.error("Hotelbeds CheckRate error:", error.message);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      source: "hotelbeds",
+      message: error.message,
+    });
+  }
+});
+
+app.post("/api/hotelbeds/book", async (req, res) => {
+  try {
+    const result = await createBooking(req.body || {});
+    return res.json({ success: true, source: "hotelbeds", data: result });
+  } catch (error) {
+    console.error("Hotelbeds booking error:", error.message);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      source: "hotelbeds",
+      message: error.message,
+    });
+  }
+});
+
+app.listen(port, "0.0.0.0", () => console.log(`STAYHUB API running on 0.0.0.0:${port}`));
 }).catch((error) => {
   console.error("STAYHUB API could not start:", error.message);
   process.exit(1);

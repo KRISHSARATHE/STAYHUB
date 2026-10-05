@@ -1,10 +1,11 @@
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import GuestSelector from "./GuestSelector";
-import { getCurrentUser, getUserWishlist, toggleWishlist, getMinDate, tomorrowInput, validateGuestSelection } from "../utils/stayhub";
+import { getCurrentUser, getMinDate, tomorrowInput, validateGuestSelection } from "../utils/stayhub";
+import { apiRequest } from "../utils/api";
 
 import stayhubLogo from "../assets/logo.svg";
-import hotels from "../assets/hotels.js";
+import { fetchHotels } from "../utils/api";
 // ======================================================
 // HOTEL DATA
 // ======================================================
@@ -20,6 +21,39 @@ function HotelDetails() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
+  const [hotels, setHotels] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadHotels() {
+      try {
+        const data = await fetchHotels();
+
+        if (active) {
+          setHotels(data);
+        }
+      } catch (error) {
+        console.error("Failed to load hotel details:", error);
+
+        if (active) {
+          setHotels([]);
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadHotels();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const hotel = hotels.find((item) => item.id === Number(id));
 
   const today = getMinDate();
@@ -33,7 +67,82 @@ function HotelDetails() {
     children: initialChildren,
     childAges: Array.from({ length: initialChildren }, (_, index) => initialAges[index] ?? 8),
   });
-  const [saved, setSaved] = useState(() => getUserWishlist(getCurrentUser()).includes(Number(id)));
+  const [saved, setSaved] = useState(false);
+  const wishlistUserAction = useRef(false);
+
+  useEffect(() => {
+    let mounted = true;
+    wishlistUserAction.current = false;
+
+    async function loadWishlistState() {
+      const currentUser = getCurrentUser();
+
+      if (!currentUser?.email || !id) {
+        if (mounted) setSaved(false);
+        return;
+      }
+
+      try {
+        const email = encodeURIComponent(currentUser.email);
+        const result = await apiRequest(`/wishlist?email=${email}`);
+        const wishlist = Array.isArray(result?.data) ? result.data : [];
+
+        if (mounted && !wishlistUserAction.current) {
+          setSaved(
+            wishlist.some(
+              (item) => Number(item.id) === Number(id)
+            )
+          );
+        }
+      } catch (error) {
+        console.error("Wishlist load failed:", error);
+
+        // Keep a local fallback so the heart still works if API temporarily fails.
+        try {
+          const key = `stayhub_wishlist_${String(currentUser.email).trim().toLowerCase()}`;
+          const local = JSON.parse(localStorage.getItem(key) || "[]");
+          if (mounted && !wishlistUserAction.current) {
+            setSaved(local.map(Number).includes(Number(id)));
+          }
+        } catch {
+          if (mounted) setSaved(false);
+        }
+      }
+    }
+
+    loadWishlistState();
+
+    return () => {
+      mounted = false;
+    };
+  }, [id]);
+
+  // ====================================================
+  // HOTEL LOADING
+  // ====================================================
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: "30px",
+          background: "#f8fafc",
+        }}
+      >
+        <div>
+          <h2>Loading hotel...</h2>
+          <p style={{ color: "#64748b" }}>
+            Please wait while we load the hotel details.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // ====================================================
   // HOTEL NOT FOUND
@@ -100,8 +209,24 @@ function HotelDetails() {
     if (checkOut <= checkIn) return alert("Check-out date must be after check-in date.");
     const guestError = validateGuestSelection(guestData);
     if (guestError) return alert(guestError);
-    const query = new URLSearchParams({ hotel: String(hotel.id), checkIn, checkOut, rooms: String(guestData.rooms), adults: String(guestData.adults), children: String(guestData.children) });
-    if (guestData.childAges.length) query.set("childAges", guestData.childAges.join(","));
+    const query = new URLSearchParams({
+      hotel: String(hotel.id),
+      checkIn,
+      checkOut,
+      rooms: String(guestData.rooms),
+      adults: String(guestData.adults),
+      children: String(guestData.children)
+    });
+
+    if (guestData.childAges.length) {
+      query.set("childAges", guestData.childAges.join(","));
+    }
+
+    const rateKey = searchParams.get("rateKey");
+    if (rateKey) {
+      query.set("rateKey", rateKey);
+    }
+
     navigate(`/booking?${query.toString()}`);
   };
 
@@ -161,14 +286,123 @@ function HotelDetails() {
           />
           <button
             type="button"
-            onClick={() => {
+            onClick={async (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+
               const currentUser = getCurrentUser();
-              if (!currentUser) { navigate("/login"); return; }
-              setSaved(toggleWishlist(currentUser, hotel.id).includes(Number(hotel.id)));
+
+              if (!currentUser?.email) {
+                navigate("/login");
+                return;
+              }
+
+              const hotelId = Number(hotel?.id);
+
+              if (!Number.isInteger(hotelId) || hotelId <= 0) {
+                console.error("Invalid hotel ID:", hotel?.id);
+                return;
+              }
+
+              const email = String(currentUser.email)
+                .trim()
+                .toLowerCase();
+
+              try {
+                // Read the actual PostgreSQL wishlist first.
+                const check = await apiRequest(
+                  `/wishlist?email=${encodeURIComponent(email)}`
+                );
+
+                const wishlist = Array.isArray(check?.data)
+                  ? check.data
+                  : [];
+
+                const alreadySaved = wishlist.some(
+                  (item) => Number(item.id) === hotelId
+                );
+
+                if (alreadySaved) {
+                  await apiRequest(
+                    `/wishlist/${hotelId}?email=${encodeURIComponent(email)}`,
+                    {
+                      method: "DELETE",
+                    }
+                  );
+
+                  setSaved(false);
+                } else {
+                  await apiRequest("/wishlist", {
+                    method: "POST",
+                    body: JSON.stringify({
+                      email,
+                      name: currentUser.name || "Guest",
+                      phone:
+                        currentUser.mobile ||
+                        currentUser.phone ||
+                        "",
+                      hotelId,
+                    }),
+                  });
+
+                  // Verify PostgreSQL save before changing the heart.
+                  const verify = await apiRequest(
+                    `/wishlist?email=${encodeURIComponent(email)}`
+                  );
+
+                  const savedWishlist = Array.isArray(verify?.data)
+                    ? verify.data
+                    : [];
+
+                  const confirmed = savedWishlist.some(
+                    (item) => Number(item.id) === hotelId
+                  );
+
+                  if (!confirmed) {
+                    throw new Error(
+                      "Hotel was not found after saving to PostgreSQL."
+                    );
+                  }
+
+                  setSaved(true);
+                }
+
+                window.dispatchEvent(
+                  new Event("stayhub-wishlist-change")
+                );
+              } catch (error) {
+                console.error(
+                  "Wishlist update failed:",
+                  error
+                );
+                alert(
+                  error.message ||
+                    "Could not update wishlist."
+                );
+              }
             }}
-            aria-label={saved ? "Remove from wishlist" : "Add to wishlist"}
-            style={{ position: "absolute", top: "18px", right: "18px", width: "46px", height: "46px", borderRadius: "50%", border: 0, background: "rgba(255,255,255,.95)", cursor: "pointer", fontSize: "23px", zIndex: 2 }}
-          >{saved ? "♥" : "♡"}</button>
+            aria-label={
+              saved
+                ? "Remove from wishlist"
+                : "Add to wishlist"
+            }
+            style={{
+              position: "absolute",
+              top: "18px",
+              right: "18px",
+              width: "46px",
+              height: "46px",
+              borderRadius: "50%",
+              border: 0,
+              background: "rgba(255,255,255,.95)",
+              cursor: "pointer",
+              fontSize: "23px",
+              zIndex: 99999,
+              pointerEvents: "auto",
+            }}
+          >
+            {saved ? "♥" : "♡"}
+          </button>
 
           <span className="details-category">
             {hotel.category}

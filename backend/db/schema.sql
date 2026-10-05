@@ -57,3 +57,11 @@ CREATE TABLE IF NOT EXISTS wishlists (
 
 CREATE INDEX IF NOT EXISTS idx_bookings_hotel_dates ON bookings(hotel_id, check_in, check_out);
 CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id);
+
+ALTER TABLE bookings
+  ADD COLUMN IF NOT EXISTS coupon_code VARCHAR(50) DEFAULT '',
+  ADD COLUMN IF NOT EXISTS discount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40) NOT NULL DEFAULT 'Demo Payment',
+  ADD COLUMN IF NOT EXISTS payment_status VARCHAR(30) NOT NULL DEFAULT 'Pending',
+  ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;
+

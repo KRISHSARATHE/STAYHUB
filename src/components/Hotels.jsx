@@ -5,10 +5,9 @@ import {
   getCurrentUser,
   getUserWishlist,
   getCity,
-  normalizeCity,
-  toggleWishlist
+  normalizeCity
 } from "../utils/stayhub";
-import { fetchHotels } from "../utils/api";
+import { apiRequest, fetchHotels, fetchHotelbedsSearch } from "../utils/api";
 
 const selectStyle = {
   width: "100%",
@@ -61,7 +60,50 @@ function Hotels() {
         setLoading(true);
         setApiError("");
 
-        const data = await fetchHotels();
+        const searchParams = new URLSearchParams(window.location.search);
+        const checkIn = searchParams.get("checkIn") || "";
+        const checkOut = searchParams.get("checkOut") || "";
+        const adults = searchParams.get("adults") || "2";
+        const children = searchParams.get("children") || "0";
+        const childAges = searchParams.get("childAges") || "";
+        const rooms = searchParams.get("rooms") || "1";
+        const destination = searchParams.get("destination") || "";
+
+        let data = await fetchHotels();
+
+        if (checkIn && checkOut) {
+          try {
+            const liveData = await fetchHotelbedsSearch({
+              destination,
+              checkIn,
+              checkOut,
+              adults,
+              children,
+              childAges,
+              rooms
+            });
+
+            if (liveData.length) {
+              // Keep existing STAYHUB/local hotels visible.
+              // Replace only hotels for which Hotelbeds returned live data.
+              const liveIds = new Set(
+                liveData.map((hotel) => String(hotel.id))
+              );
+
+              data = [
+                ...data.filter(
+                  (hotel) => !liveIds.has(String(hotel.id))
+                ),
+                ...liveData,
+              ];
+            }
+          } catch (liveError) {
+            console.warn(
+              "Hotelbeds live search unavailable; keeping local STAYHUB data.",
+              liveError
+            );
+          }
+        }
 
         if (active) {
           setHotels(data);
@@ -149,13 +191,65 @@ function Hotels() {
     setSort("Recommended");
   };
 
-  const changeWishlist = (hotelId) => {
+  const changeWishlist = async (hotelId) => {
     if (!currentUser) {
       navigate("/login");
       return;
     }
 
-    setWishlist(toggleWishlist(currentUser, hotelId));
+    try {
+      const email = String(currentUser.email || "").trim().toLowerCase();
+
+      if (!email) {
+        alert("Please login again.");
+        navigate("/login");
+        return;
+      }
+
+      const currentWishlist = await apiRequest(
+        `/wishlist?email=${encodeURIComponent(email)}`
+      );
+
+      const savedHotels = currentWishlist.data || [];
+
+      const alreadySaved = savedHotels.some(
+        (hotel) => Number(hotel.id) === Number(hotelId)
+      );
+
+      if (alreadySaved) {
+        await apiRequest(
+          `/wishlist/${hotelId}?email=${encodeURIComponent(email)}`,
+          {
+            method: "DELETE"
+          }
+        );
+      } else {
+        await apiRequest("/wishlist", {
+          method: "POST",
+          body: JSON.stringify({
+            email,
+            name: currentUser.name || "Guest",
+            phone: currentUser.phone || "",
+            hotelId: Number(hotelId)
+          })
+        });
+      }
+
+      const updatedWishlist = await apiRequest(
+        `/wishlist?email=${encodeURIComponent(email)}`
+      );
+
+      const updatedIds = (updatedWishlist.data || []).map(
+        (hotel) => Number(hotel.id)
+      );
+
+      setWishlist(updatedIds);
+
+      window.dispatchEvent(new Event("stayhub-wishlist-change"));
+    } catch (error) {
+      console.error("WISHLIST ERROR:", error);
+      alert(error.message || "Unable to update wishlist.");
+    }
   };
 
   const keepSearchParams = (hotel) => {
@@ -172,6 +266,10 @@ function Hotels() {
       const value = params.get(key);
       if (value) next.set(key, value);
     });
+
+    if (hotel?.rateKey) {
+      next.set("rateKey", String(hotel.rateKey));
+    }
 
     return next.toString()
       ? `/hotels/${hotel.id}?${next.toString()}`

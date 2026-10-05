@@ -29,7 +29,7 @@ npm install
 npm run dev
 ```
 
-API will run at `http://localhost:5000`.
+API will run at `http://localhost:5050`.
 
 ### Docker PostgreSQL
 From the project root:
@@ -45,7 +45,7 @@ The included `docker-compose.yml` starts PostgreSQL on port `5432` with:
 
 ## Health check
 
-`GET http://localhost:5000/api/health`
+`GET http://localhost:5050/api/health`
 
 ## Main endpoints
 

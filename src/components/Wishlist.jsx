@@ -71,14 +71,14 @@ function Wishlist() {
     <div style={{ minHeight: "100vh", background: "#f8fafc", color: "#0f172a" }}>
       <header className="details-topbar"><Link to="/"><img src={stayhubLogo} alt="STAYHUB" style={{ height: 42 }} /></Link><Link to="/hotels" className="back-button">← Back to Hotels</Link></header>
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: "35px 20px 60px" }}>
-        <div style={{ marginBottom: 24 }}><p style={{ color: "#4f46e5", fontWeight: 800, letterSpacing: 1.2, margin: 0 }}>SAVED STAYS</p><h1 style={{ margin: "7px 0" }}>My Wishlist</h1><p style={{ color: "#64748b" }}>{items.length} saved hotel{items.length !== 1 ? "s" : ""}</p></div>
-        {!items.length ? (
+        <div style={{ marginBottom: 24 }}><p style={{ color: "#4f46e5", fontWeight: 800, letterSpacing: 1.2, margin: 0 }}>SAVED STAYS</p><h1 style={{ margin: "7px 0" }}>My Wishlist</h1><p style={{ color: "#64748b" }}>{savedHotels.length} saved hotel{savedHotels.length !== 1 ? "s" : ""}</p></div>
+        {!savedHotels.length ? (
           <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 18, padding: "65px 20px", textAlign: "center" }}>
             <div style={{ fontSize: 48, marginBottom: 10 }}>♡</div><h2>No saved hotels yet</h2><p style={{ color: "#64748b", marginBottom: 22 }}>Save hotels from the listings or hotel details page.</p><Link to="/hotels" style={{ display: "inline-block", background: "#4f46e5", color: "#fff", textDecoration: "none", padding: "12px 20px", borderRadius: 10, fontWeight: 700 }}>Explore Hotels</Link>
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 24 }}>
-            {items.map((hotel) => (
+            {savedHotels.map((hotel) => (
               <div key={hotel.id} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 18, overflow: "hidden", boxShadow: "0 8px 25px rgba(15,23,42,.07)" }}>
                 <div style={{ position: "relative", height: 210 }}><img src={hotel.image} alt={hotel.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /><button type="button" onClick={async () => {
                         try {

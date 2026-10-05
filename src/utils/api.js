@@ -1,5 +1,5 @@
 const API_BASE_URL =
-  import.meta.env.VITE_API_URL || "http://localhost:5001/api";
+  import.meta.env.VITE_API_URL || "http://localhost:5050/api";
 
 export async function apiRequest(endpoint, options = {}) {
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -29,4 +29,35 @@ export async function apiRequest(endpoint, options = {}) {
 export async function fetchHotels() {
   const result = await apiRequest("/hotels");
   return result.data || [];
+}
+
+
+export async function fetchHotelbedsSearch(params = {}) {
+  const query = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== "") {
+      query.set(key, String(value));
+    }
+  });
+
+  const result = await apiRequest(
+    `/hotelbeds/search?${query.toString()}`
+  );
+
+  return result.data || [];
+}
+
+export async function checkHotelbedsRate(rateKey) {
+  return apiRequest("/hotelbeds/checkrate", {
+    method: "POST",
+    body: JSON.stringify({ rateKey }),
+  });
+}
+
+export async function bookHotelbeds(payload) {
+  return apiRequest("/hotelbeds/book", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }

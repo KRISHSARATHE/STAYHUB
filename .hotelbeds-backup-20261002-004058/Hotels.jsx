@@ -1,0 +1,833 @@
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import Navbar from "./Navbar";
+import {
+  getCurrentUser,
+  getUserWishlist,
+  getCity,
+  normalizeCity
+} from "../utils/stayhub";
+import { apiRequest, fetchHotels } from "../utils/api";
+
+const selectStyle = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "12px 13px",
+  border: "1px solid #cbd5e1",
+  borderRadius: "10px",
+  background: "white",
+  color: "#0f172a",
+  fontSize: "14px",
+  outline: "none"
+};
+
+const buttonStyle = {
+  border: "1px solid #cbd5e1",
+  background: "white",
+  color: "#334155",
+  padding: "10px 15px",
+  borderRadius: "10px",
+  cursor: "pointer",
+  fontWeight: "700"
+};
+
+function Hotels() {
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+
+  const [hotels, setHotels] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState("");
+
+  const [search, setSearch] = useState(params.get("destination") || "");
+  const [location, setLocation] = useState("All");
+  const [category, setCategory] = useState("All");
+  const [priceRange, setPriceRange] = useState("All");
+  const [rating, setRating] = useState("All");
+  const [sort, setSort] = useState("Recommended");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [wishlist, setWishlist] = useState(() =>
+    getUserWishlist(getCurrentUser())
+  );
+
+  const currentUser = getCurrentUser();
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadHotels() {
+      try {
+        setLoading(true);
+        setApiError("");
+
+        const data = await fetchHotels();
+
+        if (active) {
+          setHotels(data);
+        }
+      } catch (error) {
+        if (active) {
+          setApiError(error.message || "Unable to load hotels.");
+          setHotels([]);
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadHotels();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const locations = [...new Set(hotels.map((hotel) => hotel.location))];
+
+  const filteredHotels = useMemo(() => {
+    const wantedCity = normalizeCity(search);
+
+    const filtered = hotels.filter((hotel) => {
+      const matchesCity =
+        !wantedCity ||
+        normalizeCity(getCity(hotel.location)) === wantedCity;
+
+      const matchesLocation =
+        location === "All" || hotel.location === location;
+
+      const matchesCategory =
+        category === "All" || hotel.category === category;
+
+      const matchesPrice =
+        priceRange === "All" ||
+        (priceRange === "Under ₹3000" && hotel.price < 3000) ||
+        (priceRange === "₹3000 - ₹6000" &&
+          hotel.price >= 3000 &&
+          hotel.price <= 6000) ||
+        (priceRange === "₹6000 - ₹10000" &&
+          hotel.price > 6000 &&
+          hotel.price <= 10000) ||
+        (priceRange === "Above ₹10000" && hotel.price > 10000);
+
+      const matchesRating =
+        rating === "All" || hotel.rating >= Number(rating);
+
+      return (
+        matchesCity &&
+        matchesLocation &&
+        matchesCategory &&
+        matchesPrice &&
+        matchesRating
+      );
+    });
+
+    return [...filtered].sort((a, b) => {
+      if (sort === "Price Low") return a.price - b.price;
+      if (sort === "Price High") return b.price - a.price;
+      if (sort === "Rating") return b.rating - a.rating;
+      return a.id - b.id;
+    });
+  }, [
+    hotels,
+    search,
+    location,
+    category,
+    priceRange,
+    rating,
+    sort
+  ]);
+
+  const clearFilters = () => {
+    setSearch("");
+    setLocation("All");
+    setCategory("All");
+    setPriceRange("All");
+    setRating("All");
+    setSort("Recommended");
+  };
+
+  const changeWishlist = async (hotelId) => {
+    if (!currentUser) {
+      navigate("/login");
+      return;
+    }
+
+    try {
+      const email = String(currentUser.email || "").trim().toLowerCase();
+
+      if (!email) {
+        alert("Please login again.");
+        navigate("/login");
+        return;
+      }
+
+      const currentWishlist = await apiRequest(
+        `/wishlist?email=${encodeURIComponent(email)}`
+      );
+
+      const savedHotels = currentWishlist.data || [];
+
+      const alreadySaved = savedHotels.some(
+        (hotel) => Number(hotel.id) === Number(hotelId)
+      );
+
+      if (alreadySaved) {
+        await apiRequest(
+          `/wishlist/${hotelId}?email=${encodeURIComponent(email)}`,
+          {
+            method: "DELETE"
+          }
+        );
+      } else {
+        await apiRequest("/wishlist", {
+          method: "POST",
+          body: JSON.stringify({
+            email,
+            name: currentUser.name || "Guest",
+            phone: currentUser.phone || "",
+            hotelId: Number(hotelId)
+          })
+        });
+      }
+
+      const updatedWishlist = await apiRequest(
+        `/wishlist?email=${encodeURIComponent(email)}`
+      );
+
+      const updatedIds = (updatedWishlist.data || []).map(
+        (hotel) => Number(hotel.id)
+      );
+
+      setWishlist(updatedIds);
+
+      window.dispatchEvent(new Event("stayhub-wishlist-change"));
+    } catch (error) {
+      console.error("WISHLIST ERROR:", error);
+      alert(error.message || "Unable to update wishlist.");
+    }
+  };
+
+  const keepSearchParams = (hotel) => {
+    const next = new URLSearchParams();
+
+    [
+      "checkIn",
+      "checkOut",
+      "rooms",
+      "adults",
+      "children",
+      "childAges"
+    ].forEach((key) => {
+      const value = params.get(key);
+      if (value) next.set(key, value);
+    });
+
+    return next.toString()
+      ? `/hotels/${hotel.id}?${next.toString()}`
+      : `/hotels/${hotel.id}`;
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "#f8fafc",
+        color: "#0f172a"
+      }}
+    >
+      <Navbar />
+
+      <header
+        style={{
+          background:
+            "linear-gradient(135deg, #312e81 0%, #4f46e5 55%, #6366f1 100%)",
+          color: "white",
+          padding: "28px 20px 42px"
+        }}
+      >
+        <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+          <Link
+            to="/"
+            style={{
+              color: "white",
+              textDecoration: "none",
+              fontSize: 14,
+              opacity: 0.9
+            }}
+          >
+            ← Back to Home
+          </Link>
+
+          <h1
+            style={{
+              margin: "25px 0 8px",
+              fontSize: 38,
+              fontWeight: 800
+            }}
+          >
+            Find Your Perfect Stay
+          </h1>
+
+          <p
+            style={{
+              margin: 0,
+              fontSize: 16,
+              opacity: 0.9
+            }}
+          >
+            Search hotels, resorts and comfortable stays with STAYHUB.
+          </p>
+        </div>
+      </header>
+
+      <section
+        style={{
+          maxWidth: 1200,
+          margin: "-22px auto 0",
+          padding: "0 20px",
+          position: "relative",
+          zIndex: 2
+        }}
+      >
+        <div
+          style={{
+            background: "white",
+            borderRadius: 18,
+            padding: 20,
+            boxShadow: "0 12px 35px rgba(15,23,42,.12)",
+            border: "1px solid #e2e8f0"
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              alignItems: "end",
+              flexWrap: "wrap"
+            }}
+          >
+            <div style={{ flex: "1 1 420px" }}>
+              <label
+                style={{
+                  display: "block",
+                  fontWeight: 700,
+                  marginBottom: 7,
+                  fontSize: 14
+                }}
+              >
+                Search City
+              </label>
+
+              <input
+                type="text"
+                placeholder="Search city"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "13px 15px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 10,
+                  outline: "none",
+                  fontSize: 15
+                }}
+              />
+
+              <div
+                style={{
+                  color: "#64748b",
+                  fontSize: 12,
+                  marginTop: 6
+                }}
+              >
+                Only hotels in the selected city will be shown.
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setFiltersOpen((v) => !v)}
+              style={{
+                ...buttonStyle,
+                minWidth: 105,
+                height: 45,
+                background: filtersOpen ? "#eef2ff" : "#fff",
+                color: "#3730a3",
+                borderColor: filtersOpen ? "#818cf8" : "#cbd5e1"
+              }}
+            >
+              {filtersOpen ? "Hide Filters" : "Filters"} ▾
+            </button>
+          </div>
+
+          {filtersOpen && (
+            <div
+              style={{
+                marginTop: 14,
+                paddingTop: 16,
+                borderTop: "1px solid #eef2f7"
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns:
+                    "repeat(auto-fit,minmax(170px,1fr))",
+                  gap: 14
+                }}
+              >
+                <label
+                  style={{
+                    display: "grid",
+                    gap: 7,
+                    fontSize: 14,
+                    fontWeight: 700
+                  }}
+                >
+                  Location
+                  <select
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    style={selectStyle}
+                  >
+                    <option value="All">All Locations</option>
+                    {locations.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label
+                  style={{
+                    display: "grid",
+                    gap: 7,
+                    fontSize: 14,
+                    fontWeight: 700
+                  }}
+                >
+                  Category
+                  <select
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                    style={selectStyle}
+                  >
+                    <option value="All">All Categories</option>
+                    <option value="Luxury">Luxury</option>
+                    <option value="Premium">Premium</option>
+                    <option value="Budget">Budget</option>
+                    <option value="Resort">Resort</option>
+                  </select>
+                </label>
+
+                <label
+                  style={{
+                    display: "grid",
+                    gap: 7,
+                    fontSize: 14,
+                    fontWeight: 700
+                  }}
+                >
+                  Price
+                  <select
+                    value={priceRange}
+                    onChange={(e) => setPriceRange(e.target.value)}
+                    style={selectStyle}
+                  >
+                    <option value="All">All Prices</option>
+                    <option value="Under ₹3000">Under ₹3,000</option>
+                    <option value="₹3000 - ₹6000">
+                      ₹3,000 - ₹6,000
+                    </option>
+                    <option value="₹6000 - ₹10000">
+                      ₹6,000 - ₹10,000
+                    </option>
+                    <option value="Above ₹10000">
+                      Above ₹10,000
+                    </option>
+                  </select>
+                </label>
+
+                <label
+                  style={{
+                    display: "grid",
+                    gap: 7,
+                    fontSize: 14,
+                    fontWeight: 700
+                  }}
+                >
+                  Rating
+                  <select
+                    value={rating}
+                    onChange={(e) => setRating(e.target.value)}
+                    style={selectStyle}
+                  >
+                    <option value="All">All Ratings</option>
+                    <option value="4.5">4.5+ Rating</option>
+                    <option value="4.0">4.0+ Rating</option>
+                    <option value="3.5">3.5+ Rating</option>
+                  </select>
+                </label>
+
+                <label
+                  style={{
+                    display: "grid",
+                    gap: 7,
+                    fontSize: 14,
+                    fontWeight: 700
+                  }}
+                >
+                  Sort By
+                  <select
+                    value={sort}
+                    onChange={(e) => setSort(e.target.value)}
+                    style={selectStyle}
+                  >
+                    <option value="Recommended">Recommended</option>
+                    <option value="Price Low">
+                      Price: Low to High
+                    </option>
+                    <option value="Price High">
+                      Price: High to Low
+                    </option>
+                    <option value="Rating">
+                      Highest Rating
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  marginTop: 15
+                }}
+              >
+                <span
+                  style={{
+                    color: "#64748b",
+                    fontSize: 14,
+                    fontWeight: 600
+                  }}
+                >
+                  {filteredHotels.length} stays found
+                </span>
+
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  style={buttonStyle}
+                >
+                  Clear Filters
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <main
+        style={{
+          maxWidth: 1200,
+          margin: "0 auto",
+          padding: "35px 20px 60px"
+        }}
+      >
+        {loading ? (
+          <div
+            style={{
+              background: "white",
+              borderRadius: 18,
+              padding: "60px 20px",
+              textAlign: "center",
+              border: "1px solid #e2e8f0"
+            }}
+          >
+            <div style={{ fontSize: 42, marginBottom: 12 }}>🏨</div>
+            <h2 style={{ margin: 0 }}>Loading stays...</h2>
+          </div>
+        ) : apiError ? (
+          <div
+            style={{
+              background: "white",
+              borderRadius: 18,
+              padding: "60px 20px",
+              textAlign: "center",
+              border: "1px solid #e2e8f0"
+            }}
+          >
+            <div style={{ fontSize: 42, marginBottom: 12 }}>⚠️</div>
+            <h2 style={{ margin: "0 0 8px" }}>
+              Unable to load stays
+            </h2>
+            <p style={{ color: "#64748b", margin: 0 }}>
+              {apiError}
+            </p>
+          </div>
+        ) : !filteredHotels.length ? (
+          <div
+            style={{
+              background: "white",
+              borderRadius: 18,
+              padding: "60px 20px",
+              textAlign: "center",
+              border: "1px solid #e2e8f0"
+            }}
+          >
+            <div style={{ fontSize: 50, marginBottom: 15 }}>🔍</div>
+
+            <h2 style={{ margin: "0 0 8px" }}>
+              No stays found
+            </h2>
+
+            <p
+              style={{
+                color: "#64748b",
+                marginBottom: 20
+              }}
+            >
+              Try another city or change your filters.
+            </p>
+
+            <button
+              onClick={clearFilters}
+              style={{
+                background: "#4f46e5",
+                color: "white",
+                border: 0,
+                padding: "12px 20px",
+                borderRadius: 10,
+                cursor: "pointer",
+                fontWeight: 700
+              }}
+            >
+              Reset Filters
+            </button>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "repeat(auto-fill,minmax(280px,1fr))",
+              gap: 24
+            }}
+          >
+            {filteredHotels.map((hotel) => {
+              const saved = wishlist.includes(Number(hotel.id));
+
+              return (
+                <div
+                  key={hotel.id}
+                  style={{
+                    background: "white",
+                    borderRadius: 18,
+                    overflow: "hidden",
+                    border: "1px solid #e2e8f0",
+                    boxShadow:
+                      "0 8px 25px rgba(15,23,42,.07)"
+                  }}
+                >
+                  <div
+                    style={{
+                      position: "relative",
+                      height: 210,
+                      overflow: "hidden"
+                    }}
+                  >
+                    <img
+                      src={hotel.image}
+                      alt={hotel.name}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "cover",
+                        display: "block"
+                      }}
+                    />
+
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 12,
+                        left: 12,
+                        background: "rgba(15,23,42,.82)",
+                        color: "white",
+                        padding: "6px 10px",
+                        borderRadius: 20,
+                        fontSize: 12,
+                        fontWeight: 700
+                      }}
+                    >
+                      {hotel.category}
+                    </span>
+
+                    <span
+                      style={{
+                        position: "absolute",
+                        top: 12,
+                        right: 60,
+                        background: "white",
+                        color: "#0f172a",
+                        padding: "6px 9px",
+                        borderRadius: 20,
+                        fontSize: 13,
+                        fontWeight: 800
+                      }}
+                    >
+                      ⭐ {hotel.rating}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={() => changeWishlist(hotel.id)}
+                      style={{
+                        position: "absolute",
+                        top: 10,
+                        right: 10,
+                        width: 40,
+                        height: 40,
+                        borderRadius: "50%",
+                        border: 0,
+                        background: "rgba(255,255,255,.96)",
+                        cursor: "pointer",
+                        fontSize: 21
+                      }}
+                      aria-label={
+                        saved
+                          ? "Remove from wishlist"
+                          : "Add to wishlist"
+                      }
+                    >
+                      {saved ? "♥" : "♡"}
+                    </button>
+                  </div>
+
+                  <div style={{ padding: 18 }}>
+                    <h2
+                      style={{
+                        margin: "0 0 7px",
+                        fontSize: 20,
+                        lineHeight: 1.25
+                      }}
+                    >
+                      {hotel.name}
+                    </h2>
+
+                    <div
+                      style={{
+                        color: "#64748b",
+                        fontSize: 14,
+                        marginBottom: 12
+                      }}
+                    >
+                      📍 {hotel.location}
+                    </div>
+
+                    <p
+                      style={{
+                        color: "#64748b",
+                        fontSize: 14,
+                        lineHeight: 1.55,
+                        margin: "0 0 17px"
+                      }}
+                    >
+                      {hotel.description}
+                    </p>
+
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "end",
+                        gap: 10
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            color: "#64748b",
+                            fontSize: 12
+                          }}
+                        >
+                          Starting from
+                        </div>
+
+                        <div
+                          style={{
+                            fontSize: 21,
+                            fontWeight: 800
+                          }}
+                        >
+                          ₹{hotel.price.toLocaleString("en-IN")}
+                        </div>
+
+                        <div
+                          style={{
+                            color: "#64748b",
+                            fontSize: 12
+                          }}
+                        >
+                          per night
+                        </div>
+                      </div>
+
+                      <Link
+                        to={keepSearchParams(hotel)}
+                        style={{
+                          background: "#4f46e5",
+                          color: "white",
+                          textDecoration: "none",
+                          padding: "11px 16px",
+                          borderRadius: 10,
+                          fontWeight: 700,
+                          fontSize: 14,
+                          whiteSpace: "nowrap"
+                        }}
+                      >
+                        View Details
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </main>
+
+      <footer
+        style={{
+          background: "#0f172a",
+          color: "white",
+          textAlign: "center",
+          padding: "25px 20px"
+        }}
+      >
+        <div style={{ fontWeight: 800, fontSize: 20 }}>
+          STAYHUB
+        </div>
+
+        <p
+          style={{
+            margin: "7px 0 0",
+            color: "#94a3b8",
+            fontSize: 14
+          }}
+        >
+          Find. Book. Stay.
+        </p>
+      </footer>
+    </div>
+  );
+}
+
+export default Hotels;

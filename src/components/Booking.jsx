@@ -1,11 +1,11 @@
-import { apiRequest } from "../utils/api";
+import { apiRequest, checkHotelbedsRate } from "../utils/api";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 
 import stayhubLogo from "../assets/logo.svg";
 import GuestSelector from "./GuestSelector";
 import { getMinDate, tomorrowInput, calculateNights as getNights, validateGuestSelection, openInvoice } from "../utils/stayhub";
-import hotels from "../assets/hotels.js";
+
 // ======================================================
 // HOTEL DATA
 // ======================================================
@@ -28,10 +28,49 @@ function Booking() {
   const selectedAdults = Number(searchParams.get("adults") || searchParams.get("guests") || 2);
   const selectedChildren = Number(searchParams.get("children") || 0);
   const selectedAges = (searchParams.get("childAges") || "").split(",").filter(Boolean).map(Number);
+  const hotelbedsRateKey = searchParams.get("rateKey") || "";
 
-  const hotel = hotels.find((item) => item.id === hotelId);
+  const [hotels, setHotels] = useState([]);
+  const [hotelLoading, setHotelLoading] = useState(true);
 
   const [currentUser, setCurrentUser] = useState(null);
+
+  // ====================================================
+  // LOAD HOTEL FROM POSTGRESQL API
+  // ====================================================
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadHotel() {
+      try {
+        const result = await apiRequest("/hotels");
+        const data = result.data || [];
+
+        if (active) {
+          setHotels(data);
+        }
+      } catch (error) {
+        console.error("Failed to load hotel:", error);
+
+        if (active) {
+          setHotels([]);
+        }
+      } finally {
+        if (active) {
+          setHotelLoading(false);
+        }
+      }
+    }
+
+    loadHotel();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const hotel = hotels.find((item) => item.id === hotelId);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -45,6 +84,12 @@ function Booking() {
     childAges: Array.from({ length: selectedChildren }, (_, index) => selectedAges[index] ?? 8),
   });
   const [verified, setVerified] = useState(false);
+
+  // Coupon + demo payment
+  const [couponCode, setCouponCode] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState(null);
+  const [paymentMethod, setPaymentMethod] = useState("UPI");
+  const [couponMessage, setCouponMessage] = useState("");
 
   const [confirmedBooking, setConfirmedBooking] = useState(null);
 
@@ -84,6 +129,33 @@ function Booking() {
       navigate("/login");
     }
   }, [navigate]);
+
+  // ====================================================
+  // HOTEL LOADING
+  // ====================================================
+
+  if (hotelLoading) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          textAlign: "center",
+          padding: "30px",
+          background: "#f8fafc",
+        }}
+      >
+        <div>
+          <h2>Loading hotel...</h2>
+          <p style={{ color: "#64748b" }}>
+            Please wait while we load the hotel details.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // ====================================================
   // HOTEL NOT FOUND
@@ -158,8 +230,64 @@ function Booking() {
 
   const nights = calculateNights();
 
-  const roomSubtotal = nights > 0 ? nights * hotel.price * Number(formData.rooms || 1) : 0;
-  const totalAmount = roomSubtotal;
+  const roomSubtotal =
+    nights > 0
+      ? nights * hotel.price * Number(formData.rooms || 1)
+      : 0;
+
+  const discountAmount = appliedCoupon
+    ? appliedCoupon.type === "percent"
+      ? Math.min(
+          roomSubtotal,
+          roomSubtotal * appliedCoupon.value / 100
+        )
+      : Math.min(roomSubtotal, appliedCoupon.value)
+    : 0;
+
+  const totalAmount = Math.max(
+    0,
+    roomSubtotal - discountAmount
+  );
+
+  const applyCoupon = () => {
+    const code = couponCode.trim().toUpperCase();
+
+    const coupons = {
+      STAY10: {
+        code: "STAY10",
+        type: "percent",
+        value: 10,
+        label: "10% OFF",
+      },
+      STAY500: {
+        code: "STAY500",
+        type: "flat",
+        value: 500,
+        label: "₹500 OFF",
+      },
+      WELCOME15: {
+        code: "WELCOME15",
+        type: "percent",
+        value: 15,
+        label: "15% OFF",
+      },
+    };
+
+    if (!code) {
+      setAppliedCoupon(null);
+      setCouponMessage("Enter a coupon code.");
+      return;
+    }
+
+    if (!coupons[code]) {
+      setAppliedCoupon(null);
+      setCouponMessage("Invalid coupon code.");
+      return;
+    }
+
+    setAppliedCoupon(coupons[code]);
+    setCouponMessage(`✓ ${coupons[code].label} applied successfully.`);
+  };
 
   // ====================================================
   // SUBMIT BOOKING
@@ -265,6 +393,23 @@ function Booking() {
     }
 
     // ----------------------------------------------
+    // HOTELBEDS CHECKRATE
+    // ----------------------------------------------
+
+    if (hotelbedsRateKey) {
+      try {
+        await checkHotelbedsRate(hotelbedsRateKey);
+      } catch (hotelbedsError) {
+        console.error("Hotelbeds CheckRate failed:", hotelbedsError);
+        alert(
+          hotelbedsError.message ||
+          "This Hotelbeds room rate is no longer available. Please search again."
+        );
+        return;
+      }
+    }
+
+    // ----------------------------------------------
     // BOOKING ID
     // ----------------------------------------------
 
@@ -299,6 +444,9 @@ function Booking() {
 
       location: hotel.location,
 
+      provider: hotelbedsRateKey ? "hotelbeds" : "local",
+      hotelbedsRateKey: hotelbedsRateKey || "",
+
       image: hotel.image,
 
       name: formData.name.trim(),
@@ -320,8 +468,11 @@ function Booking() {
       roomAmount: roomSubtotal,
       serviceFee: 0,
       tax: 0,
+      discount: discountAmount,
+      couponCode: appliedCoupon?.code || couponCode.trim().toUpperCase() || "",
       total: totalAmount,
       price: totalAmount,
+      paymentMethod,
       room: "Deluxe Room",
       status: "Confirmed",
 
@@ -340,6 +491,8 @@ function Booking() {
           userEmail: user.email || formData.email,
           provider: user.provider || "email",
           verified: true,
+          couponCode: appliedCoupon?.code || couponCode.trim().toUpperCase() || "",
+          paymentMethod,
         }),
       });
 
@@ -992,7 +1145,135 @@ function Booking() {
               </div>
             </div>
 
-            <label style={{ display: "flex", gap: "9px", alignItems: "flex-start", marginTop: "18px", color: "#475569", fontSize: "13px", lineHeight: 1.4 }}>
+            
+            {/* COUPON */}
+
+            <div
+              style={{
+                marginTop: "20px",
+                padding: "16px",
+                border: "1px solid #e5e7eb",
+                borderRadius: "12px",
+                background: "#fafafa",
+              }}
+            >
+              <label
+                style={{
+                  display: "block",
+                  marginBottom: "8px",
+                  fontWeight: "600",
+                }}
+              >
+                Coupon Code
+              </label>
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: "8px",
+                }}
+              >
+                <input
+                  type="text"
+                  value={couponCode}
+                  onChange={(e) => {
+                    setCouponCode(e.target.value.toUpperCase());
+                    setCouponMessage("");
+                  }}
+                  placeholder="Enter coupon"
+                  style={{
+                    flex: 1,
+                    padding: "12px",
+                    border: "1px solid #d1d5db",
+                    borderRadius: "9px",
+                    boxSizing: "border-box",
+                  }}
+                />
+
+                <button
+                  type="button"
+                  onClick={applyCoupon}
+                  style={{
+                    border: "none",
+                    borderRadius: "9px",
+                    padding: "0 16px",
+                    background: "#111827",
+                    color: "#fff",
+                    fontWeight: "700",
+                    cursor: "pointer",
+                  }}
+                >
+                  Apply
+                </button>
+              </div>
+
+              {couponMessage && (
+                <p
+                  style={{
+                    margin: "8px 0 0",
+                    fontSize: "13px",
+                    color: appliedCoupon ? "#16a34a" : "#dc2626",
+                    fontWeight: "600",
+                  }}
+                >
+                  {couponMessage}
+                </p>
+              )}
+
+              <p
+                style={{
+                  margin: "8px 0 0",
+                  color: "#64748b",
+                  fontSize: "12px",
+                }}
+              >
+                Try: STAY10, STAY500 or WELCOME15
+              </p>
+            </div>
+
+            {/* PAYMENT */}
+
+            <div style={{ marginTop: "18px" }}>
+              <label
+                style={{
+                  display: "block",
+                  marginBottom: "8px",
+                  fontWeight: "600",
+                }}
+              >
+                Payment Method
+              </label>
+
+              <select
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "13px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "9px",
+                  background: "#fff",
+                  boxSizing: "border-box",
+                }}
+              >
+                <option value="UPI">UPI</option>
+                <option value="Card">Credit / Debit Card</option>
+                <option value="Cash at Hotel">Cash at Hotel</option>
+                <option value="Demo Payment">STAYHUB Demo Payment</option>
+              </select>
+
+              <p
+                style={{
+                  margin: "7px 0 0",
+                  color: "#64748b",
+                  fontSize: "12px",
+                }}
+              >
+                🔒 Demo payment mode — no real money is charged.
+              </p>
+            </div>
+
+<label style={{ display: "flex", gap: "9px", alignItems: "flex-start", marginTop: "18px", color: "#475569", fontSize: "13px", lineHeight: 1.4 }}>
               <input type="checkbox" checked={verified} onChange={(e) => setVerified(e.target.checked)} required style={{ marginTop: "3px" }} />
               <span>I confirm that my guest, contact and stay details are correct.</span>
             </label>
@@ -1025,7 +1306,7 @@ function Booking() {
                 fontSize: "13px",
               }}
             >
-              🔒 No payment required at this stage
+              🔒 Demo payment — no real money is charged
             </p>
           </form>
 
@@ -1141,6 +1422,23 @@ function Booking() {
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Rooms</span><strong>{formData.rooms}</strong></div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Adults</span><strong>{formData.adults}</strong></div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Children</span><strong>{formData.children}</strong></div>
+
+
+              {discountAmount > 0 && (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    marginBottom: "10px",
+                    color: "#16a34a",
+                  }}
+                >
+                  <span>Coupon Discount</span>
+                  <strong>
+                    -₹{discountAmount.toLocaleString("en-IN")}
+                  </strong>
+                </div>
+              )}
 
               <div
                 style={{
