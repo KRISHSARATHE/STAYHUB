@@ -25,3 +25,7 @@ dist-ssr
 # Hotelbeds credentials
 backend/.env
 *.key
+.vercel
+
+# Hotelbeds certificates
+*.pem
