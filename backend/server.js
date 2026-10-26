@@ -774,6 +774,30 @@ app.post("/api/admin/login", async (req, res) => {
   }
 });
 
+// Production auth email helper. Never return verification secrets to browsers.
+const authFrontendUrl = () => (process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://stayhub-flax-two.vercel.app" : "http://localhost:5173")).replace(/\/$/, "");
+const authBackendUrl = (req) => (process.env.BACKEND_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+async function sendAuthEmail(to, subject, body) {
+  if (!process.env.RESEND_API_KEY || !process.env.MAIL_FROM) throw new Error("Email provider not configured");
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: process.env.MAIL_FROM, to: [to], subject, text: body }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) { console.error("Auth email provider rejected request:", response.status); throw new Error("Email provider rejected request"); }
+}
+const verificationAttempts = new Map();
+function verificationRateLimited(req, email) {
+  const key = `${req.ip || "unknown"}:${email}`;
+  const now = Date.now();
+  const attempts = (verificationAttempts.get(key) || []).filter(t => now - t < 3600000);
+  if (attempts.length >= 5) return true;
+  verificationAttempts.set(key, [...attempts, now]);
+  return false;
+}
+
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, phone, password } = req.body || {};
@@ -810,6 +834,8 @@ app.post("/api/auth/register", async (req, res) => {
       });
     }
 
+    if (!emailPattern.test(normalizedEmail)) return res.status(400).json({ message: "Enter a valid email address." });
+    if (verificationRateLimited(req, normalizedEmail)) return res.status(429).json({ message: "Too many requests. Try again later." });
     const passwordHash = await bcrypt.hash(String(password), 12);
     const verificationToken = crypto.randomBytes(32).toString("hex");
 
@@ -829,16 +855,17 @@ app.post("/api/auth/register", async (req, res) => {
 
     const row = user.rows[0];
 
-    // Development response until an email provider is connected.
-    const verificationUrl =
-      `/api/auth/verify/${encodeURIComponent(verificationToken)}`;
-
-    res.status(201).json({
+    const verificationUrl = `${authBackendUrl(req)}/api/auth/verify/${encodeURIComponent(verificationToken)}`;
+    try {
+      await sendAuthEmail(normalizedEmail, "Verify your STAYHUB email", `Welcome to STAYHUB!\n\nVerify your email within 30 minutes:\n${verificationUrl}\n\nIf you did not sign up, ignore this message.`);
+    } catch (emailError) {
+      console.error("Signup verification email failed:", emailError.message);
+      return res.status(503).json({ message: "Account created, but verification email could not be sent. Use Resend Verification to try again.", verificationRequired: true });
+    }
+    return res.status(201).json({
       data: sanitizeUser(row),
       verificationRequired: true,
-      message: "Registration successful. Please verify your account.",
-      verificationUrl,
-      verificationToken,
+      message: "Account created. Check your email for a verification link (valid for 30 minutes).",
     });
   } catch (error) {
     if (error.code === "23505") {
@@ -853,6 +880,25 @@ app.post("/api/auth/register", async (req, res) => {
     });
   }
 });
+app.post("/api/auth/resend-verification", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!emailPattern.test(email)) return res.status(400).json({ message: "Enter a valid email address." });
+  if (verificationRateLimited(req, email)) return res.status(429).json({ message: "Too many requests. Try again later." });
+  const generic = { message: "If this email has an unverified STAYHUB account, a verification link will be sent." };
+  try {
+    const found = await query("SELECT id FROM users WHERE email=$1 AND verified=FALSE AND password_hash IS NOT NULL LIMIT 1", [email]);
+    if (!found.rowCount) return res.json(generic);
+    const token = crypto.randomBytes(32).toString("hex");
+    const url = `${authBackendUrl(req)}/api/auth/verify/${token}`;
+    await sendAuthEmail(email, "Verify your STAYHUB email", `Verify your STAYHUB account within 30 minutes:\n${url}\n\nIf you did not request this, ignore this email.`);
+    await query("UPDATE users SET verification_token=$1, verification_expires_at=NOW()+INTERVAL '30 minutes' WHERE id=$2 AND verified=FALSE", [token, found.rows[0].id]);
+    return res.json(generic);
+  } catch (error) {
+    console.error("Resend verification failed:", error.message);
+    return res.status(502).json({ message: "Verification email could not be sent. Check email service configuration and try again." });
+  }
+});
+
 app.get("/api/auth/verify/:token", async (req, res) => {
   try {
     const token = String(req.params.token || "").trim();
@@ -921,7 +967,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     if (!found.rowCount) return res.json(generic);
     const token = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-    const resetUrl = `${(process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "")}/reset-password?token=${token}`;
+    const resetUrl = `${authFrontendUrl()}/reset-password?token=${token}`;
     const apiKey = process.env.RESEND_API_KEY;
     if (!apiKey || !process.env.MAIL_FROM) {
       if (process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_RESET_LINK === "true") {
