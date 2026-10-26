@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
-import logo from "../assets/logo.svg";
+const logo = "/stayhub-logo.svg";
 import { setCurrentUser } from "../utils/stayhub";
+import { apiRequest } from "../utils/api";
 
 function Login() {
   const [formData, setFormData] = useState({
@@ -22,17 +23,27 @@ function Login() {
       if (!window.google?.accounts?.id || !googleButtonRef.current) return;
       window.google.accounts.id.initialize({
         client_id: googleClientId,
-        callback: (response) => {
+        callback: async (response) => {
           try {
-            const payload = JSON.parse(atob(response.credential.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-            const user = { id: payload.sub, name: payload.name || payload.email?.split("@")[0] || "Google User", email: payload.email || "", picture: payload.picture || "", mobile: "", google: true, emailVerified: true, createdAt: new Date().toISOString() };
-            const users = JSON.parse(localStorage.getItem("stayhubUsers") || "[]");
-            if (!users.some((item) => item.email?.toLowerCase() === user.email.toLowerCase())) { localStorage.setItem("stayhubUsers", JSON.stringify([...users, user])); }
-            setCurrentUser(user);
-            setSuccess(`Welcome back, ${user.name}!`);
-            setTimeout(() => { window.location.href = "/"; }, 500);
-          } catch {
-            setError("Google sign-in could not be completed. Please try again.");
+            setError("");
+            const result = await apiRequest("/auth/google", {
+              method: "POST",
+              body: JSON.stringify({ credential: response.credential }),
+            });
+            if (!result?.data || !result?.token) {
+              throw new Error("Google sign-in response was incomplete.");
+            }
+            localStorage.setItem("stayhubToken", result.token);
+            setCurrentUser({
+              ...result.data,
+              mobile: result.data.phone || "",
+              google: true,
+              emailVerified: true,
+            });
+            setSuccess(`Welcome, ${result.data.name}!`);
+            window.location.href = "/";
+          } catch (error) {
+            setError(error.message || "Google sign-in failed. Please try again.");
           }
         },
       });
@@ -70,46 +81,42 @@ function Login() {
     setSuccess("");
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-
     setError("");
     setSuccess("");
 
-    const users =
-      JSON.parse(localStorage.getItem("stayhubUsers")) || [];
+    try {
+      const result = await apiRequest("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          email: formData.email.trim().toLowerCase(),
+          password: formData.password,
+        }),
+      });
 
-    const user = users.find(
-      (item) =>
-        item.email?.toLowerCase() ===
-          formData.email.trim().toLowerCase() &&
-        item.password === formData.password
-    );
+      if (!result?.data || !result?.token) {
+        throw new Error("Login response was incomplete.");
+      }
 
-    if (!user) {
-      setError("Invalid email or password.");
-      return;
+      localStorage.setItem("stayhubToken", result.token);
+      setCurrentUser({
+        ...result.data,
+        mobile: result.data.phone || result.data.mobile || "",
+        emailVerified: true,
+      });
+
+      if (rememberMe) {
+        localStorage.setItem("stayhubRememberMe", "true");
+      } else {
+        localStorage.removeItem("stayhubRememberMe");
+      }
+
+      setSuccess(`Welcome back, ${result.data.name}!`);
+      setTimeout(() => { window.location.href = "/"; }, 700);
+    } catch (error) {
+      setError(error.message || "Login failed. Please try again.");
     }
-
-    // Save logged-in user
-    setCurrentUser(user);
-
-    // Remember me
-    if (rememberMe) {
-      localStorage.setItem(
-        "stayhubRememberMe",
-        "true"
-      );
-    } else {
-      localStorage.removeItem("stayhubRememberMe");
-    }
-
-    setSuccess(`Welcome back, ${user.name}!`);
-
-    // Reload Home so Navbar detects logged-in user
-    setTimeout(() => {
-      window.location.href = "/";
-    }, 700);
   };
 
   return (
@@ -204,16 +211,8 @@ function Login() {
                   Password
                 </label>
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    alert(
-                      "Password reset feature will be connected later."
-                    )
-                  }
-                >
-                  Forgot Password?
-                </button>
+                <Link to="/forgot-password">Forgot Password?</Link>
+                <Link to="/resend-verification">Resend Verification</Link>
 
               </div>
 

@@ -1,7 +1,7 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 
-import stayhubLogo from "../assets/logo.svg";
+const stayhubLogo = "/stayhub-logo.svg";
 import { openInvoice } from "../utils/stayhub";
 import { apiRequest } from "../utils/api";
 function MyBookings() {

@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
-import { useState } from "react";
-import logo from "../assets/logo.svg";
+import { useEffect, useRef, useState } from "react";
+const logo = "/stayhub-logo.svg";
 import { setCurrentUser } from "../utils/stayhub";
+import { apiRequest } from "../utils/api";
 
 function Signup() {
   const [formData, setFormData] = useState({
@@ -36,6 +37,74 @@ function Signup() {
 
   const passwordStrength = getPasswordStrength(formData.password);
 
+  const googleSignupButtonRef = useRef(null);
+  const googleSignupClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
+
+  useEffect(() => {
+    if (!googleSignupClientId || !googleSignupButtonRef.current) return;
+
+    let cancelled = false;
+    const renderGoogleSignup = () => {
+      if (cancelled || !window.google?.accounts?.id || !googleSignupButtonRef.current) return;
+
+      window.google.accounts.id.initialize({
+        client_id: googleSignupClientId,
+        callback: async (response) => {
+          try {
+            const result = await apiRequest("/auth/google", {
+              method: "POST",
+              body: JSON.stringify({ credential: response.credential }),
+            });
+            if (!result?.data || !result?.token) {
+              throw new Error("Google sign-in response was incomplete.");
+            }
+            localStorage.setItem("stayhubToken", result.token);
+            setCurrentUser({
+              ...result.data,
+              mobile: result.data.phone || "",
+              google: true,
+              emailVerified: true,
+            });
+            window.location.href = "/";
+          } catch (error) {
+            alert(error.message || "Google sign-in failed. Please try again.");
+          }
+        },
+      });
+
+      googleSignupButtonRef.current.innerHTML = "";
+      window.google.accounts.id.renderButton(googleSignupButtonRef.current, {
+        theme: "outline",
+        size: "large",
+        text: "continue_with",
+        shape: "rectangular",
+        width: 320,
+      });
+    };
+
+    if (window.google?.accounts?.id) {
+      renderGoogleSignup();
+    } else {
+      let script = document.getElementById("google-gsi-script");
+      if (!script) {
+        script = document.createElement("script");
+        script.id = "google-gsi-script";
+        script.src = "https://accounts.google.com/gsi/client";
+        script.async = true;
+        script.defer = true;
+        document.head.appendChild(script);
+      }
+      script.addEventListener("load", renderGoogleSignup);
+    }
+
+    return () => {
+      cancelled = true;
+      if (googleSignupButtonRef.current) googleSignupButtonRef.current.innerHTML = "";
+    };
+  }, [googleSignupClientId]);
+
+
+
   // ================= INPUT CHANGE =================
 
   const handleChange = (e) => {
@@ -49,7 +118,7 @@ function Signup() {
 
   // ================= SIGNUP =================
 
-  const handleSignup = (e) => {
+  const handleSignup = async (e) => {
     e.preventDefault();
 
     const name = formData.name.trim();
@@ -102,57 +171,18 @@ function Signup() {
     setLoading(true);
 
     try {
-      const existingUsers =
-        JSON.parse(localStorage.getItem("stayhubUsers")) || [];
+      const result = await apiRequest("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ name, email, phone: mobile, password }),
+      });
 
-      const emailExists = existingUsers.some(
-        (user) => user.email?.toLowerCase() === email
-      );
-
-      if (emailExists) {
-        alert("An account with this email already exists.");
-        setLoading(false);
-        return;
-      }
-
-      const mobileExists = existingUsers.some(
-        (user) => user.mobile === mobile
-      );
-
-      if (mobileExists) {
-        alert("An account with this mobile number already exists.");
-        setLoading(false);
-        return;
-      }
-
-      const newUser = {
-        id: `STH${Date.now()}`,
-        name,
-        email,
-        mobile,
-        password,
-        createdAt: new Date().toLocaleDateString("en-IN"),
-      };
-
-      const updatedUsers = [...existingUsers, newUser];
-
-      localStorage.setItem(
-        "stayhubUsers",
-        JSON.stringify(updatedUsers)
-      );
-
-      setCurrentUser(newUser);
-
-      localStorage.setItem("stayhubRememberMe", "true");
-
-      alert("Account created successfully!");
-
-      setTimeout(() => {
-        window.location.href = "/";
-      }, 700);
+      if (!result?.verificationRequired) throw new Error(result?.message || "Registration response was incomplete.");
+      alert(result.message || "Account created. Check your inbox and spam folder for the verification email.");
+      window.location.href = "/login";
+      setLoading(false);
     } catch (error) {
       console.error("Signup error:", error);
-      alert("Something went wrong. Please try again.");
+      alert((error.message || "Signup failed. Please try again.") + "\nIf your account is unverified, use Resend Verification from Login.");
       setLoading(false);
     }
   };
@@ -432,6 +462,16 @@ function Signup() {
             </button>
 
           </form>
+
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "14px", margin: "20px 0" }}>
+            <span style={{ color: "#64748b", fontSize: "13px" }}>OR SIGN UP WITH</span>
+            {googleSignupClientId ? (
+              <div ref={googleSignupButtonRef}></div>
+            ) : (
+              <p style={{ color: "#64748b", fontSize: "13px" }}>Google sign-in is not configured in this environment.</p>
+            )}
+          </div>
+
 
           {/* LOGIN */}
 

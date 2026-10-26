@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import logo from "../assets/logo.svg";
+const logo = "/stayhub-logo.svg";
 import { apiRequest } from "../utils/api";
 
 const ADMIN_EMAIL = "admin@stayhub.com";

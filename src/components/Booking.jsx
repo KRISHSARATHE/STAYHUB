@@ -1,8 +1,9 @@
-import { apiRequest, checkHotelbedsRate } from "../utils/api";
+import { safeHotelImage, handleHotelImageError } from "../utils/hotelImage.js";
+import { apiRequest, checkHotelbedsRate, fetchHotelbedsSearch } from "../utils/api";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 
-import stayhubLogo from "../assets/logo.svg";
+const stayhubLogo = "/stayhub-logo.svg";
 import GuestSelector from "./GuestSelector";
 import { getMinDate, tomorrowInput, calculateNights as getNights, validateGuestSelection, openInvoice } from "../utils/stayhub";
 
@@ -28,7 +29,7 @@ function Booking() {
   const selectedAdults = Number(searchParams.get("adults") || searchParams.get("guests") || 2);
   const selectedChildren = Number(searchParams.get("children") || 0);
   const selectedAges = (searchParams.get("childAges") || "").split(",").filter(Boolean).map(Number);
-  const hotelbedsRateKey = searchParams.get("rateKey") || "";
+  const hotelbedsRateKey = ""; // Local catalogue/demo bookings only
 
   const [hotels, setHotels] = useState([]);
   const [hotelLoading, setHotelLoading] = useState(true);
@@ -84,6 +85,122 @@ function Booking() {
     childAges: Array.from({ length: selectedChildren }, (_, index) => selectedAges[index] ?? 8),
   });
   const [verified, setVerified] = useState(false);
+  const [liveBookingRate, setLiveBookingRate] = useState({
+    loading: false,
+    available: false,
+    total: 0,
+    rateKey: "",
+  });
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadBookingRate() {
+      if (!hotelbedsRateKey || !hotel || !selectedCheckIn ||
+          !selectedCheckOut || selectedCheckOut <= selectedCheckIn) {
+        setLiveBookingRate({
+          loading: false, available: false, total: 0, rateKey: "",
+        });
+        return;
+      }
+
+      setLiveBookingRate({
+        loading: true, available: false, total: 0, rateKey: "",
+      });
+
+      try {
+        const destination = String(hotel.location || "").split(",")[0].trim();
+        const rows = await fetchHotelbedsSearch({
+          destination,
+          checkIn: selectedCheckIn,
+          checkOut: selectedCheckOut,
+          rooms: formData.rooms,
+          adults: formData.adults,
+          children: formData.children,
+          childAges: formData.childAges.join(","),
+        });
+
+        const list = Array.isArray(rows) ? rows : [];
+        // Match live rates only through the explicit Hotelbeds code.
+        // Local database IDs and hotel names are not provider identifiers.
+        const mappedHotelbedsCode = Number(hotel.hotelbeds_code);
+        const matched = Number.isInteger(mappedHotelbedsCode) &&
+          mappedHotelbedsCode > 0
+          ? list.find(
+              (row) =>
+                Number(row.hotelbedsCode) === mappedHotelbedsCode
+            )
+          : undefined;
+
+        const rates = Array.isArray(matched?.rates)
+          ? matched.rates
+              .filter((rate) => Number(rate.net) > 0 && rate.rateKey)
+              .sort((a, b) => Number(a.net) - Number(b.net))
+          : [];
+
+        const chosen =
+          rates.find((rate) => String(rate.rateKey) === hotelbedsRateKey) ||
+          rates[0];
+
+        if (!matched || !chosen) {
+          if (active) setLiveBookingRate({
+            loading: false, available: false, total: 0, rateKey: "",
+          });
+          return;
+        }
+
+        let total = Number(chosen.sellingRate || chosen.net);
+        const currency = String(matched.currency || "EUR").toUpperCase();
+
+        if (!Number.isFinite(total) || total <= 0) {
+          if (active) setLiveBookingRate({
+            loading: false, available: false, total: 0, rateKey: "",
+          });
+          return;
+        }
+
+        if (currency !== "INR") {
+          const response = await fetch(
+            "https://open.er-api.com/v6/latest/" + encodeURIComponent(currency)
+          );
+          if (!response.ok) throw new Error("Currency conversion unavailable.");
+
+          const conversion = await response.json();
+          const inrRate = Number(conversion?.rates?.INR);
+          if (!Number.isFinite(inrRate) || inrRate <= 0) {
+            throw new Error("Invalid INR conversion rate.");
+          }
+          total *= inrRate;
+        }
+
+        if (active) setLiveBookingRate({
+          loading: false,
+          available: true,
+          total,
+          rateKey: chosen.rateKey || "",
+        });
+      } catch (error) {
+        console.error("Booking live-rate lookup failed:", error);
+        if (active) setLiveBookingRate({
+          loading: false, available: false, total: 0, rateKey: "",
+        });
+      }
+    }
+
+    loadBookingRate();
+    return () => { active = false; };
+  }, [
+    hotelbedsRateKey,
+    hotel?.id,
+    hotel?.name,
+    hotel?.location,
+    selectedCheckIn,
+    selectedCheckOut,
+    formData.rooms,
+    formData.adults,
+    formData.children,
+    formData.childAges.join(","),
+  ]);
 
   // Coupon + demo payment
   const [couponCode, setCouponCode] = useState("");
@@ -230,10 +347,17 @@ function Booking() {
 
   const nights = calculateNights();
 
-  const roomSubtotal =
-    nights > 0
-      ? nights * hotel.price * Number(formData.rooms || 1)
-      : 0;
+  const roomSubtotal = hotelbedsRateKey
+    ? (liveBookingRate.available ? liveBookingRate.total : 0)
+    : (
+        nights > 0 && Number(hotel.price) > 0
+          ? nights * Number(hotel.price) * Number(formData.rooms || 1)
+          : 0
+      );
+
+  const priceIsAvailable = hotelbedsRateKey
+    ? liveBookingRate.available && liveBookingRate.total > 0
+    : Number(hotel.price) > 0 && nights > 0;
 
   const discountAmount = appliedCoupon
     ? appliedCoupon.type === "percent"
@@ -393,23 +517,27 @@ function Booking() {
     }
 
     // ----------------------------------------------
-    // HOTELBEDS CHECKRATE
-    // ----------------------------------------------
-
+    // HOTELBEDS SAFETY GUARD
+    // Supplier booking is not connected end-to-end yet.
     if (hotelbedsRateKey) {
-      try {
-        await checkHotelbedsRate(hotelbedsRateKey);
-      } catch (hotelbedsError) {
-        console.error("Hotelbeds CheckRate failed:", hotelbedsError);
-        alert(
-          hotelbedsError.message ||
-          "This Hotelbeds room rate is no longer available. Please search again."
-        );
-        return;
-      }
+      alert(
+        "This live Hotelbeds rate cannot be booked through STAYHUB yet. " +
+        "No supplier reservation or payment has been made. " +
+        "Please go back and choose a locally bookable catalogue option."
+      );
+      return;
     }
 
-    // ----------------------------------------------
+    // Prevent zero-price or unavailable-price bookings.
+    if (
+      !priceIsAvailable ||
+      !Number.isFinite(totalAmount) ||
+      totalAmount <= 0
+    ) {
+      alert("Booking unavailable: a valid hotel price is required.");
+      return;
+    }
+
     // BOOKING ID
     // ----------------------------------------------
 
@@ -576,7 +704,7 @@ function Booking() {
                 marginBottom: "8px",
               }}
             >
-              Booking Confirmed!
+              Demo Booking Confirmed!
             </h1>
 
             <p
@@ -584,7 +712,7 @@ function Booking() {
                 color: "#64748b",
               }}
             >
-              Your hotel reservation has been
+              Your demo hotel reservation has been
               successfully created.
             </p>
           </div>
@@ -602,7 +730,7 @@ function Booking() {
             }}
           >
             <img
-              src={confirmedBooking.image}
+              src={safeHotelImage(confirmedBooking.image)} onError={handleHotelImageError}
               alt={confirmedBooking.hotelName}
               style={{
                 width: "150px",
@@ -1380,10 +1508,18 @@ function Booking() {
                 </span>
 
                 <strong>
-                  ₹
-                  {hotel.price.toLocaleString(
-                    "en-IN"
-                  )}
+                  {hotelbedsRateKey
+                    ? liveBookingRate.loading
+                      ? "Checking live price..."
+                      : priceIsAvailable
+                        ? "₹" + (
+                            liveBookingRate.total /
+                            Math.max(1, nights * Number(formData.rooms || 1))
+                          ).toLocaleString("en-IN", { maximumFractionDigits: 0 })
+                        : "Price unavailable"
+                    : priceIsAvailable
+                      ? "₹" + Number(hotel.price).toLocaleString("en-IN")
+                      : "Price unavailable"}
                 </strong>
               </div>
 
@@ -1461,10 +1597,13 @@ function Booking() {
                     color: "#4f46e5",
                   }}
                 >
-                  ₹
-                  {totalAmount.toLocaleString(
-                    "en-IN"
-                  )}
+                  {priceIsAvailable
+                    ? "₹" + totalAmount.toLocaleString("en-IN", {
+                        maximumFractionDigits: 0,
+                      })
+                    : liveBookingRate.loading
+                      ? "Checking..."
+                      : "Price unavailable"}
                 </strong>
               </div>
             </div>

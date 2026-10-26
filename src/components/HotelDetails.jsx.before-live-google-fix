@@ -1,11 +1,11 @@
+import { safeHotelImage, handleHotelImageError } from "../utils/hotelImage.js";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import GuestSelector from "./GuestSelector";
 import { getCurrentUser, getMinDate, tomorrowInput, validateGuestSelection } from "../utils/stayhub";
-import { apiRequest } from "../utils/api";
+import { apiRequest, fetchHotelbedsSearch, fetchHotels } from "../utils/api";
 
 import stayhubLogo from "../assets/logo.svg";
-import { fetchHotels } from "../utils/api";
 // ======================================================
 // HOTEL DATA
 // ======================================================
@@ -23,6 +23,7 @@ function HotelDetails() {
 
   const [hotels, setHotels] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [liveRateInfo, setLiveRateInfo] = useState({ loading: false, price: 0, currency: "INR", available: false, rateKey: "" });
 
   useEffect(() => {
     let active = true;
@@ -56,6 +57,7 @@ function HotelDetails() {
 
   const hotel = hotels.find((item) => item.id === Number(id));
 
+
   const today = getMinDate();
   const initialChildren = Number(searchParams.get("children") || 0);
   const initialAges = (searchParams.get("childAges") || "").split(",").filter(Boolean).map(Number);
@@ -69,6 +71,137 @@ function HotelDetails() {
   });
   const [saved, setSaved] = useState(false);
   const wishlistUserAction = useRef(false);
+
+  const requestedRateKey = searchParams.get("rateKey") || "";
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadLiveRate() {
+      if (!hotel || !checkIn || !checkOut || checkOut <= checkIn) {
+        setLiveRateInfo({ loading: false, price: 0, currency: "INR", available: false, rateKey: "" });
+        return;
+      }
+
+      const city = String(hotel.location || "").split(",")[0].trim();
+
+      if (!city) {
+        setLiveRateInfo({ loading: false, price: 0, currency: "INR", available: false, rateKey: "" });
+        return;
+      }
+
+      setLiveRateInfo({ loading: true, price: 0, currency: "INR", available: false, rateKey: "" });
+
+      try {
+        const rows = await fetchHotelbedsSearch({
+          destination: city,
+          checkIn,
+          checkOut,
+          rooms: guestData.rooms,
+          adults: guestData.adults,
+          children: guestData.children,
+          childAges: guestData.childAges.join(","),
+        });
+
+        const list = Array.isArray(rows) ? rows : [];
+        const mappedHotelbedsCode = Number(hotel.hotelbeds_code);
+        const matched = Number.isInteger(mappedHotelbedsCode) &&
+          mappedHotelbedsCode > 0
+          ? list.find(
+              (row) =>
+                Number(row.hotelbedsCode) === mappedHotelbedsCode
+            )
+          : undefined;
+
+        const rates = Array.isArray(matched?.rates)
+          ? matched.rates
+              .filter((rate) => Number(rate.net) > 0 && rate.rateKey)
+              .sort((a, b) => Number(a.net) - Number(b.net))
+          : [];
+
+        // Use the requested rate if present; otherwise use the cheapest fresh rate.
+        const chosenRate =
+          rates.find((rate) => String(rate.rateKey) === requestedRateKey) ||
+          rates[0];
+
+        if (!matched || !chosenRate) {
+          if (active) {
+            setLiveRateInfo({ loading: false, price: 0, currency: "INR", available: false, rateKey: "" });
+          }
+          return;
+        }
+
+        const start = Date.parse(checkIn + "T00:00:00Z");
+        const end = Date.parse(checkOut + "T00:00:00Z");
+        const nights = Math.max(1, Math.round((end - start) / 86400000));
+
+        const originalCurrency = String(matched.currency || "EUR").toUpperCase();
+        const totalRate = Number(chosenRate.sellingRate || chosenRate.net);
+
+        if (!Number.isFinite(totalRate) || totalRate <= 0) {
+          if (active) {
+            setLiveRateInfo({ loading: false, price: 0, currency: "INR", available: false, rateKey: "" });
+          }
+          return;
+        }
+
+        let pricePerNight = totalRate / nights;
+        let displayCurrency = originalCurrency;
+
+        if (originalCurrency !== "INR") {
+          try {
+            const response = await fetch(
+              "https://open.er-api.com/v6/latest/" + encodeURIComponent(originalCurrency)
+            );
+
+            if (response.ok) {
+              const conversion = await response.json();
+              const inrRate = Number(conversion?.rates?.INR);
+
+              if (Number.isFinite(inrRate) && inrRate > 0) {
+                pricePerNight *= inrRate;
+                displayCurrency = "INR";
+              }
+            }
+          } catch (conversionError) {
+            console.warn("Live price currency conversion failed:", conversionError);
+          }
+        }
+
+        if (active) {
+          setLiveRateInfo({
+            loading: false,
+            price: pricePerNight,
+            currency: displayCurrency,
+            available: true,
+            rateKey: chosenRate.rateKey || "",
+          });
+        }
+      } catch (error) {
+        console.error("Hotel details live-rate search failed:", error);
+
+        if (active) {
+          setLiveRateInfo({ loading: false, price: 0, currency: "INR", available: false, rateKey: "" });
+        }
+      }
+    }
+
+    loadLiveRate();
+
+    return () => {
+      active = false;
+    };
+  }, [
+    hotel?.id,
+    hotel?.location,
+    checkIn,
+    checkOut,
+    guestData.rooms,
+    guestData.adults,
+    guestData.children,
+    guestData.childAges.join(","),
+    requestedRateKey,
+  ]);
 
   useEffect(() => {
     let mounted = true;
@@ -116,6 +249,25 @@ function HotelDetails() {
       mounted = false;
     };
   }, [id]);
+
+  const fallbackPrice = Number(hotel?.price || 0);
+  let formattedLivePrice = fallbackPrice > 0
+    ? new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(fallbackPrice)
+    : "Live price unavailable for these dates";
+
+  if (liveRateInfo.available && liveRateInfo.price > 0) {
+    try {
+      formattedLivePrice = new Intl.NumberFormat("en-IN", {
+        style: "currency",
+        currency: liveRateInfo.currency,
+        maximumFractionDigits: 0,
+      }).format(liveRateInfo.price);
+    } catch {
+      formattedLivePrice = liveRateInfo.price.toLocaleString("en-IN") + " " + liveRateInfo.currency;
+    }
+  } else if (liveRateInfo.loading && fallbackPrice <= 0) {
+    formattedLivePrice = "Checking live price...";
+  }
 
   // ====================================================
   // HOTEL LOADING
@@ -209,8 +361,23 @@ function HotelDetails() {
     if (checkOut <= checkIn) return alert("Check-out date must be after check-in date.");
     const guestError = validateGuestSelection(guestData);
     if (guestError) return alert(guestError);
-    const query = new URLSearchParams({ hotel: String(hotel.id), checkIn, checkOut, rooms: String(guestData.rooms), adults: String(guestData.adults), children: String(guestData.children) });
-    if (guestData.childAges.length) query.set("childAges", guestData.childAges.join(","));
+    const query = new URLSearchParams({
+      hotel: String(hotel.id),
+      checkIn,
+      checkOut,
+      rooms: String(guestData.rooms),
+      adults: String(guestData.adults),
+      children: String(guestData.children)
+    });
+
+    if (guestData.childAges.length) {
+      query.set("childAges", guestData.childAges.join(","));
+    }
+
+    // Use the local catalogue booking flow only.
+    // Hotelbeds supplier booking is not yet connected end-to-end.
+    query.delete("rateKey");
+
     navigate(`/booking?${query.toString()}`);
   };
 
@@ -263,7 +430,7 @@ function HotelDetails() {
 
         <div className="details-image" style={{ position: "relative" }}>
           <img
-            src={hotel.image}
+            src={safeHotelImage(hotel.image)} onError={handleHotelImageError}
             alt={hotel.name}
             loading="eager"
             decoding="async"
@@ -288,34 +455,34 @@ function HotelDetails() {
                 return;
               }
 
-              const email = String(currentUser.email).trim().toLowerCase();
-              const localKey = `stayhub_wishlist_${email}`;
-
-              // User clicked: prevent the initial wishlist GET
-              // from overwriting this state.
-              wishlistUserAction.current = true;
-
-              // Optimistic UI: heart changes immediately.
-              const nextSaved = !saved;
-              setSaved(nextSaved);
-
-              // Keep a local copy as a fallback.
-              try {
-                const existing = JSON.parse(
-                  localStorage.getItem(localKey) || "[]"
-                ).map(Number);
-
-                const updated = nextSaved
-                  ? Array.from(new Set([...existing, hotelId]))
-                  : existing.filter((item) => item !== hotelId);
-
-                localStorage.setItem(localKey, JSON.stringify(updated));
-              } catch (localError) {
-                console.error("Local wishlist update failed:", localError);
-              }
+              const email = String(currentUser.email)
+                .trim()
+                .toLowerCase();
 
               try {
-                if (nextSaved) {
+                // Read the actual PostgreSQL wishlist first.
+                const check = await apiRequest(
+                  `/wishlist?email=${encodeURIComponent(email)}`
+                );
+
+                const wishlist = Array.isArray(check?.data)
+                  ? check.data
+                  : [];
+
+                const alreadySaved = wishlist.some(
+                  (item) => Number(item.id) === hotelId
+                );
+
+                if (alreadySaved) {
+                  await apiRequest(
+                    `/wishlist/${hotelId}?email=${encodeURIComponent(email)}`,
+                    {
+                      method: "DELETE",
+                    }
+                  );
+
+                  setSaved(false);
+                } else {
                   await apiRequest("/wishlist", {
                     method: "POST",
                     body: JSON.stringify({
@@ -328,41 +495,65 @@ function HotelDetails() {
                       hotelId,
                     }),
                   });
-                } else {
-                  await apiRequest(
-                    `/wishlist/${hotelId}?email=${encodeURIComponent(email)}`,
-                    { method: "DELETE" }
+
+                  // Verify PostgreSQL save before changing the heart.
+                  const verify = await apiRequest(
+                    `/wishlist?email=${encodeURIComponent(email)}`
                   );
+
+                  const savedWishlist = Array.isArray(verify?.data)
+                    ? verify.data
+                    : [];
+
+                  const confirmed = savedWishlist.some(
+                    (item) => Number(item.id) === hotelId
+                  );
+
+                  if (!confirmed) {
+                    throw new Error(
+                      "Hotel was not found after saving to PostgreSQL."
+                    );
+                  }
+
+                  setSaved(true);
                 }
 
                 window.dispatchEvent(
                   new Event("stayhub-wishlist-change")
                 );
               } catch (error) {
-                console.error("Wishlist API update failed:", error);
-
-                // Roll back only if the server operation failed.
-                setSaved(!nextSaved);
-
-                try {
-                  const existing = JSON.parse(
-                    localStorage.getItem(localKey) || "[]"
-                  ).map(Number);
-
-                  const rolledBack = !nextSaved
-                    ? Array.from(new Set([...existing, hotelId]))
-                    : existing.filter((item) => item !== hotelId);
-
-                  localStorage.setItem(
-                    localKey,
-                    JSON.stringify(rolledBack)
-                  );
-                } catch {}
+                console.error(
+                  "Wishlist update failed:",
+                  error
+                );
+                alert(
+                  error.message ||
+                    "Could not update wishlist."
+                );
               }
             }}
-            aria-label={saved ? "Remove from wishlist" : "Add to wishlist"}
-            style={{ position: "absolute", top: "18px", right: "18px", width: "46px", height: "46px", borderRadius: "50%", border: 0, background: "rgba(255,255,255,.95)", cursor: "pointer", fontSize: "23px", zIndex: 2 }}
-          >{saved ? "♥" : "♡"}</button>
+            aria-label={
+              saved
+                ? "Remove from wishlist"
+                : "Add to wishlist"
+            }
+            style={{
+              position: "absolute",
+              top: "18px",
+              right: "18px",
+              width: "46px",
+              height: "46px",
+              borderRadius: "50%",
+              border: 0,
+              background: "rgba(255,255,255,.95)",
+              cursor: "pointer",
+              fontSize: "23px",
+              zIndex: 99999,
+              pointerEvents: "auto",
+            }}
+          >
+            {saved ? "♥" : "♡"}
+          </button>
 
           <span className="details-category">
             {hotel.category}
@@ -413,27 +604,31 @@ function HotelDetails() {
             {/* RATING */}
 
             <div className="details-rating">
-
-              <span
-                style={{
-                  background: "#fef3c7",
-                  color: "#92400e",
-                  padding: "5px 10px",
-                  borderRadius: "8px",
-                  fontWeight: "700",
-                }}
-              >
-                ⭐ {hotel.rating}
-              </span>
-
-              <span>
-                ★★★★★
-              </span>
-
-              <span>
-                Excellent
-              </span>
-
+              {Number(hotel.rating) > 0 ? (
+                <>
+                  <span
+                    style={{
+                      background: "#fef3c7",
+                      color: "#92400e",
+                      padding: "5px 10px",
+                      borderRadius: "8px",
+                      fontWeight: "700",
+                    }}
+                  >
+                    ⭐ {Number(hotel.rating).toFixed(1)} / 5
+                  </span>
+                  {Number(hotel.reviewCount) > 0 && (
+                    <span>
+                      {Number(hotel.reviewCount).toLocaleString("en-IN")} reviews
+                    </span>
+                  )}
+                  <span style={{ color: "#64748b", fontSize: 12 }}>
+                    STAYHUB catalogue rating
+                  </span>
+                </>
+              ) : (
+                <span>Rating unavailable — no verified rating in STAYHUB catalogue.</span>
+              )}
             </div>
 
             {/* DESCRIPTION */}
@@ -454,19 +649,9 @@ function HotelDetails() {
 
               <div className="amenities-grid">
 
-                {(hotel.amenities || [
-                  "Free Wi-Fi",
-                  "Comfortable Rooms",
-                  "24/7 Reception",
-                  "Room Service",
-                  "Air Conditioning",
-                  "Secure Stay",
-                ]).map(
-                  (amenity) => (
-                    <div
-                      className="amenity"
-                      key={amenity}
-                    >
+                {Array.isArray(hotel.amenities) && hotel.amenities.length > 0 ? (
+                  hotel.amenities.map((amenity) => (
+                    <div className="amenity" key={amenity}>
                       <span
                         style={{
                           color: "#16a34a",
@@ -476,10 +661,13 @@ function HotelDetails() {
                       >
                         ✓
                       </span>
-
                       {amenity}
                     </div>
-                  )
+                  ))
+                ) : (
+                  <p className="details-description">
+                    Amenities have not been verified for this hotel yet.
+                  </p>
                 )}
 
               </div>
@@ -646,22 +834,22 @@ function HotelDetails() {
                 color: "#64748b",
               }}
             >
-              Starting from
+              {liveRateInfo.available && liveRateInfo.price > 0
+                ? "Live price for selected dates"
+                : Number(hotel?.price) > 0
+                  ? hotel?.priceSource === "estimate"
+                    ? "Estimated starting price · not live-confirmed"
+                    : "Catalogue price · not live-confirmed"
+                  : "Price unavailable"}
             </p>
 
             {/* PRICE */}
 
             <div className="details-price">
-
-              ₹
-              {hotel.price.toLocaleString(
-                "en-IN"
+              {formattedLivePrice}
+              {((liveRateInfo.available && liveRateInfo.price > 0) || Number(hotel?.price) > 0) && (
+                <span>/ night</span>
               )}
-
-              <span>
-                / night
-              </span>
-
             </div>
 
             {/* =================================================
@@ -760,11 +948,8 @@ function HotelDetails() {
                 </span>
 
                 <strong>
-                  ₹
-                  {hotel.price.toLocaleString(
-                    "en-IN"
-                  )}
-                  /night
+                  {formattedLivePrice}
+                  {(liveRateInfo.available && liveRateInfo.price > 0) || Number(hotel?.price) > 0 ? "/night" : ""}
                 </strong>
 
               </div>

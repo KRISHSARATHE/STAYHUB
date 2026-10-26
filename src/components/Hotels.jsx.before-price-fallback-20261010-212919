@@ -5,10 +5,74 @@ import {
   getCurrentUser,
   getUserWishlist,
   getCity,
-  normalizeCity,
-  toggleWishlist
+  normalizeCity
 } from "../utils/stayhub";
-import { fetchHotels } from "../utils/api";
+import { apiRequest, fetchHotels, fetchHotelbedsSearch } from "../utils/api";
+
+async function convertHotelPricesToINR(hotels) {
+  const currencies = [
+    ...new Set(
+      hotels
+        .filter((hotel) => Number(hotel.price) > 0)
+        .map((hotel) => String(hotel.currency || "INR").toUpperCase())
+        .filter((currency) => currency !== "INR")
+    ),
+  ];
+
+  const rates = {};
+
+  await Promise.all(
+    currencies.map(async (currency) => {
+      try {
+        const response = await fetch(
+          `https://open.er-api.com/v6/latest/${encodeURIComponent(currency)}`
+        );
+        if (!response.ok) return;
+
+        const result = await response.json();
+        const rate = Number(result?.rates?.INR);
+        if (Number.isFinite(rate) && rate > 0) {
+          rates[currency] = rate;
+        }
+      } catch (error) {
+        console.warn(`INR conversion rate unavailable for ${currency}.`, error);
+      }
+    })
+  );
+
+  return hotels.map((hotel) => {
+    const currency = String(hotel.currency || "INR").toUpperCase();
+    const amount = Number(hotel.price);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { ...hotel, currency: "INR" };
+    }
+
+    if (currency === "INR") {
+      return { ...hotel, price: amount, currency: "INR" };
+    }
+
+    const rate = rates[currency];
+
+    if (!rate) {
+      // Preserve the real supplier price if INR conversion fails.
+      return {
+        ...hotel,
+        price: amount,
+        currency,
+        priceConversionUnavailable: true,
+      };
+    }
+
+    return {
+      ...hotel,
+      price: amount * rate,
+      currency: "INR",
+      originalCurrency: currency,
+      originalPrice: amount,
+    };
+  });
+}
 
 const selectStyle = {
   width: "100%",
@@ -34,11 +98,13 @@ const buttonStyle = {
 
 function Hotels() {
   const [params] = useSearchParams();
+  const searchKey = params.toString();
   const navigate = useNavigate();
 
   const [hotels, setHotels] = useState([]);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState("");
+  const [liveSearchWarning, setLiveSearchWarning] = useState("");
 
   const [search, setSearch] = useState(params.get("destination") || "");
   const [location, setLocation] = useState("All");
@@ -60,11 +126,107 @@ function Hotels() {
       try {
         setLoading(true);
         setApiError("");
+        setLiveSearchWarning("");
 
-        const data = await fetchHotels();
+        const searchParams = new URLSearchParams(searchKey);
+        const checkIn = searchParams.get("checkIn") || "";
+        const checkOut = searchParams.get("checkOut") || "";
+        const adults = searchParams.get("adults") || "2";
+        const children = searchParams.get("children") || "0";
+        const childAges = searchParams.get("childAges") || "";
+        const rooms = searchParams.get("rooms") || "1";
+        const destination = searchParams.get("destination") || "";
+
+        const catalogueData = await fetchHotels();
+        let data = catalogueData.map((hotel) => ({
+          ...hotel,
+          priceSource: "catalogue"
+        }));
+
+        if (checkIn && checkOut) {
+          try {
+            const liveData = await fetchHotelbedsSearch({
+              destination,
+              checkIn,
+              checkOut,
+              adults,
+              children,
+              childAges,
+              rooms
+            });
+
+            const liveById = new Map(
+              liveData.map((hotel) => [String(hotel.id), hotel])
+            );
+
+            const mergedCatalogue = catalogueData.map((local) => {
+              const live = liveById.get(String(local.id));
+
+              if (!live) {
+                return { ...local, priceSource: "catalogue" };
+              }
+
+              liveById.delete(String(local.id));
+              const livePrice = Number(live.price || live.minRate || 0);
+
+              return {
+                ...local,
+                ...live,
+                id: local.id,
+                name: local.name || live.name,
+                location: local.location || live.location,
+                category: local.category || live.category,
+                image: local.image || live.image,
+                description: local.description || live.description,
+                rating: Number(local.rating) > 0
+                  ? Number(local.rating)
+                  : Number(live.rating) || 0,
+                price: livePrice,
+                currency: live.currency || "INR",
+                priceSource: livePrice > 0 ? "live" : "catalogue"
+              };
+            });
+
+            const additionalLiveHotels = liveData
+              .filter((hotel) => liveById.has(String(hotel.id)))
+              .map((hotel) => ({
+                ...hotel,
+                priceSource: Number(hotel.price || hotel.minRate || 0) > 0
+                  ? "live"
+                  : "catalogue"
+              }));
+
+            data = [...mergedCatalogue, ...additionalLiveHotels];
+
+            if (!liveData.length && active) {
+              setLiveSearchWarning(
+                "No live rates were returned for these dates. Catalogue prices are estimates, not confirmed rates."
+              );
+            } else if (
+              liveData.some((hotel) => !(Number(hotel.price || hotel.minRate) > 0)) &&
+              active
+            ) {
+              setLiveSearchWarning(
+                "Some hotels have no confirmed live price for these dates."
+              );
+            }
+          } catch (liveError) {
+            console.warn(
+              "Hotelbeds live search unavailable; keeping local STAYHUB data.",
+              liveError
+            );
+            if (active) {
+              setLiveSearchWarning(
+                "Live prices could not be verified. Displayed catalogue prices are estimates."
+              );
+            }
+          }
+        }
+
+        const pricesInINR = await convertHotelPricesToINR(data);
 
         if (active) {
-          setHotels(data);
+          setHotels(pricesInINR);
         }
       } catch (error) {
         if (active) {
@@ -83,7 +245,7 @@ function Hotels() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [searchKey]);
 
   const locations = [...new Set(hotels.map((hotel) => hotel.location))];
 
@@ -149,13 +311,65 @@ function Hotels() {
     setSort("Recommended");
   };
 
-  const changeWishlist = (hotelId) => {
+  const changeWishlist = async (hotelId) => {
     if (!currentUser) {
       navigate("/login");
       return;
     }
 
-    setWishlist(toggleWishlist(currentUser, hotelId));
+    try {
+      const email = String(currentUser.email || "").trim().toLowerCase();
+
+      if (!email) {
+        alert("Please login again.");
+        navigate("/login");
+        return;
+      }
+
+      const currentWishlist = await apiRequest(
+        `/wishlist?email=${encodeURIComponent(email)}`
+      );
+
+      const savedHotels = currentWishlist.data || [];
+
+      const alreadySaved = savedHotels.some(
+        (hotel) => Number(hotel.id) === Number(hotelId)
+      );
+
+      if (alreadySaved) {
+        await apiRequest(
+          `/wishlist/${hotelId}?email=${encodeURIComponent(email)}`,
+          {
+            method: "DELETE"
+          }
+        );
+      } else {
+        await apiRequest("/wishlist", {
+          method: "POST",
+          body: JSON.stringify({
+            email,
+            name: currentUser.name || "Guest",
+            phone: currentUser.phone || "",
+            hotelId: Number(hotelId)
+          })
+        });
+      }
+
+      const updatedWishlist = await apiRequest(
+        `/wishlist?email=${encodeURIComponent(email)}`
+      );
+
+      const updatedIds = (updatedWishlist.data || []).map(
+        (hotel) => Number(hotel.id)
+      );
+
+      setWishlist(updatedIds);
+
+      window.dispatchEvent(new Event("stayhub-wishlist-change"));
+    } catch (error) {
+      console.error("WISHLIST ERROR:", error);
+      alert(error.message || "Unable to update wishlist.");
+    }
   };
 
   const keepSearchParams = (hotel) => {
@@ -172,6 +386,10 @@ function Hotels() {
       const value = params.get(key);
       if (value) next.set(key, value);
     });
+
+    if (hotel?.rateKey) {
+      next.set("rateKey", String(hotel.rateKey));
+    }
 
     return next.toString()
       ? `/hotels/${hotel.id}?${next.toString()}`
@@ -490,6 +708,11 @@ function Hotels() {
           padding: "35px 20px 60px"
         }}
       >
+        {liveSearchWarning && (
+          <div role="status" style={{ marginBottom: 18, padding: "14px 16px", borderRadius: 12, background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412" }}>
+            {liveSearchWarning}
+          </div>
+        )}
         {loading ? (
           <div
             style={{
@@ -632,7 +855,9 @@ function Hotels() {
                         fontWeight: 800
                       }}
                     >
-                      ⭐ {hotel.rating}
+                      {Number(hotel.rating) > 0
+                        ? `⭐ ${Number(hotel.rating).toFixed(1)}`
+                        : "Not rated"}
                     </span>
 
                     <button
@@ -707,7 +932,11 @@ function Hotels() {
                             fontSize: 12
                           }}
                         >
-                          Starting from
+                          {hotel.priceSource === "live"
+                            ? "Live price for selected dates"
+                            : params.get("checkIn") && params.get("checkOut")
+                              ? "Catalogue estimate (not live-confirmed)"
+                              : "Starting from"}
                         </div>
 
                         <div
@@ -716,7 +945,28 @@ function Hotels() {
                             fontWeight: 800
                           }}
                         >
-                          ₹{hotel.price.toLocaleString("en-IN")}
+                          {Number(hotel.price) > 0 ? (
+                            (() => {
+                              const amount = Number(hotel.price);
+                              const currency = String(hotel.currency || "INR").toUpperCase();
+
+                              try {
+                                return new Intl.NumberFormat("en-IN", {
+                                  style: "currency",
+                                  currency,
+                                  maximumFractionDigits: 0,
+                                }).format(amount);
+                              } catch {
+                                return `${amount.toLocaleString("en-IN")} ${currency}`;
+                              }
+                            })()
+                          ) : (
+                            hotel.priceConversionUnavailable
+                              ? "INR conversion unavailable"
+                              : params.get("checkIn") && params.get("checkOut")
+                                ? "Price unavailable for selected dates"
+                                : "Select dates to see price"
+                          )}
                         </div>
 
                         <div

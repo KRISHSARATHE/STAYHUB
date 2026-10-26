@@ -6,7 +6,7 @@ import {
   useNavigate,
 } from "react-router-dom";
 
-import stayhubLogo from "./assets/logo.svg";
+const stayhubLogo = "/stayhub-logo.svg";
 
 import { useEffect, useState } from "react";
 import { fetchHotels } from "./utils/api";
@@ -15,6 +15,7 @@ import Hotels from "./components/Hotels";
 import HotelDetails from "./components/HotelDetails";
 import Booking from "./components/Booking";
 import Login from "./components/Login";
+import PasswordRecovery from "./components/PasswordRecovery";
 import Signup from "./components/Signup";
 import MyBookings from "./components/MyBookings";
 import Wishlist from "./components/Wishlist";
@@ -182,7 +183,7 @@ function Home() {
           <Link to="/" className="logo">
 
             <img
-              src="/src/assets/logo.svg"
+              src={stayhubLogo}
               alt="STAYHUB"
               style={{
                 width: "150px",
@@ -1283,6 +1284,10 @@ function App() {
           path="/login"
           element={<Login />}
         />
+
+        <Route path="/forgot-password" element={<PasswordRecovery />} />
+        <Route path="/resend-verification" element={<PasswordRecovery />} />
+        <Route path="/reset-password" element={<PasswordRecovery />} />
 
         {/* SIGNUP */}
 

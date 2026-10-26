@@ -1,3 +1,4 @@
+import { safeHotelImage, handleHotelImageError } from "../utils/hotelImage.js";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import Navbar from "./Navbar";
@@ -7,7 +8,80 @@ import {
   getCity,
   normalizeCity
 } from "../utils/stayhub";
-import { apiRequest, fetchHotels, fetchHotelbedsSearch } from "../utils/api";
+import { apiRequest, fetchHotels, fetchOsmHotels, fetchHotelbedsSearch, fetchStayingApiSearch } from "../utils/api";
+
+async function convertHotelPricesToINR(hotels) {
+  const currencies = [
+    ...new Set(
+      hotels
+        .filter((hotel) => Number(hotel.price) > 0)
+        .map((hotel) => String(hotel.currency || "INR").toUpperCase())
+        .filter((currency) => currency !== "INR")
+    ),
+  ];
+
+  const rates = {};
+
+  await Promise.all(
+    currencies.map(async (currency) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+      try {
+        const response = await fetch(
+          `https://open.er-api.com/v6/latest/${encodeURIComponent(currency)}`,
+          { signal: controller.signal }
+        );
+        if (!response.ok) return;
+
+        const result = await response.json();
+        const rate = Number(result?.rates?.INR);
+        if (Number.isFinite(rate) && rate > 0) {
+          rates[currency] = rate;
+        }
+      } catch (error) {
+        console.warn(`INR conversion rate unavailable for ${currency}.`, error);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    })
+  );
+
+  return hotels.map((hotel) => {
+    const currency = String(hotel.currency || "INR").toUpperCase();
+    const amount = Number(hotel.price);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { ...hotel, currency: "INR" };
+    }
+
+    if (currency === "INR") {
+      return { ...hotel, price: amount, currency: "INR" };
+    }
+
+    const rate = rates[currency];
+
+    if (!rate) {
+      // Never treat an unconverted foreign-currency amount as INR.
+      return {
+        ...hotel,
+        price: 0,
+        currency: "INR",
+        originalCurrency: currency,
+        originalPrice: amount,
+        priceConversionUnavailable: true,
+      };
+    }
+
+    return {
+      ...hotel,
+      price: amount * rate,
+      currency: "INR",
+      originalCurrency: currency,
+      originalPrice: amount,
+    };
+  });
+}
 
 const selectStyle = {
   width: "100%",
@@ -33,19 +107,39 @@ const buttonStyle = {
 
 function Hotels() {
   const [params] = useSearchParams();
+  const searchKey = params.toString();
   const navigate = useNavigate();
+
+  const [returnState] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem("stayhub-listing-return");
+      if (!raw) return null;
+      const saved = JSON.parse(raw);
+      if (saved.url !== window.location.pathname + window.location.search) {
+        return null;
+      }
+      sessionStorage.removeItem("stayhub-listing-return");
+      return saved;
+    } catch {
+      return null;
+    }
+  });
 
   const [hotels, setHotels] = useState([]);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState("");
+  const [liveSearchWarning, setLiveSearchWarning] = useState("");
 
-  const [search, setSearch] = useState(params.get("destination") || "");
-  const [location, setLocation] = useState("All");
-  const [category, setCategory] = useState("All");
-  const [priceRange, setPriceRange] = useState("All");
-  const [rating, setRating] = useState("All");
-  const [sort, setSort] = useState("Recommended");
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [search, setSearch] = useState(returnState?.search ?? (params.get("destination") || ""));
+  const [checkInDate, setCheckInDate] = useState(returnState?.checkInDate ?? (params.get("checkIn") || ""));
+  const [checkOutDate, setCheckOutDate] = useState(returnState?.checkOutDate ?? (params.get("checkOut") || ""));
+  const [adultsCount, setAdultsCount] = useState(returnState?.adultsCount ?? (params.get("adults") || "2"));
+  const [location, setLocation] = useState(returnState?.location ?? "All");
+  const [category, setCategory] = useState(returnState?.category ?? "All");
+  const [priceRange, setPriceRange] = useState(returnState?.priceRange ?? "All");
+  const [rating, setRating] = useState(returnState?.rating ?? "All");
+  const [sort, setSort] = useState(returnState?.sort ?? "Recommended");
+  const [filtersOpen, setFiltersOpen] = useState(returnState?.filtersOpen ?? false);
   const [wishlist, setWishlist] = useState(() =>
     getUserWishlist(getCurrentUser())
   );
@@ -59,8 +153,9 @@ function Hotels() {
       try {
         setLoading(true);
         setApiError("");
+        setLiveSearchWarning("");
 
-        const searchParams = new URLSearchParams(window.location.search);
+        const searchParams = new URLSearchParams(searchKey);
         const checkIn = searchParams.get("checkIn") || "";
         const checkOut = searchParams.get("checkOut") || "";
         const adults = searchParams.get("adults") || "2";
@@ -69,9 +164,63 @@ function Hotels() {
         const rooms = searchParams.get("rooms") || "1";
         const destination = searchParams.get("destination") || "";
 
-        let data = await fetchHotels();
+        let catalogueData = await fetchHotels();
 
-        if (checkIn && checkOut) {
+        // Render available catalogue results without waiting for live providers.
+        if (active && Array.isArray(catalogueData) && catalogueData.length > 0) {
+          setHotels(
+            catalogueData.map((hotel) => ({
+              ...hotel,
+              priceSource: hotel.priceSource || (
+                hotel.source === "osm" ? "demo-estimate" : "catalogue"
+              )
+            }))
+          );
+          setLoading(false);
+        }
+        let usingOsmListings = false;
+
+        // Prefer city-specific OSM listings when a destination is searched.
+        if (destination.trim() && import.meta.env.VITE_ENABLE_OSM_SEARCH === "true") {
+          try {
+            const osmData = await fetchOsmHotels(destination);
+
+            if (Array.isArray(osmData) && osmData.length > 0) {
+              catalogueData = [...catalogueData, ...osmData];
+              usingOsmListings = true;
+
+              if (active) {
+                setLiveSearchWarning(
+                  "Hotel listings are from OpenStreetMap. Prices and room availability are demo estimates, not live offers."
+                );
+              }
+            } else if (active) {
+              setLiveSearchWarning(
+                "No OpenStreetMap listings found for this destination. Showing the existing hotel catalogue."
+              );
+            }
+          } catch (osmError) {
+            console.warn(
+              "OSM search unavailable; using the existing hotel catalogue.",
+              osmError
+            );
+
+            if (active) {
+              setLiveSearchWarning(
+                "OpenStreetMap search is temporarily unavailable. Showing the existing hotel catalogue."
+              );
+            }
+          }
+        }
+
+        let data = catalogueData.map((hotel) => ({
+          ...hotel,
+          priceSource: hotel.priceSource || (
+            hotel.source === "osm" ? "demo-estimate" : "catalogue"
+          )
+        }));
+
+        if (import.meta.env.VITE_ENABLE_HOTELBEDS_SEARCH === "true" && checkIn && checkOut && !usingOsmListings) {
           try {
             const liveData = await fetchHotelbedsSearch({
               destination,
@@ -83,30 +232,226 @@ function Hotels() {
               rooms
             });
 
-            if (liveData.length) {
-              // Keep existing STAYHUB/local hotels visible.
-              // Replace only hotels for which Hotelbeds returned live data.
-              const liveIds = new Set(
-                liveData.map((hotel) => String(hotel.id))
-              );
+            // Match rates only through the explicit Hotelbeds provider code.
+            // Never assume a provider ID equals a local database hotel ID.
+            const liveByHotelbedsCode = new Map(
+              liveData
+                .filter((hotel) => Number(hotel.hotelbedsCode) > 0)
+                .map((hotel) => [
+                  String(Number(hotel.hotelbedsCode)),
+                  hotel
+                ])
+            );
 
-              data = [
-                ...data.filter(
-                  (hotel) => !liveIds.has(String(hotel.id))
-                ),
-                ...liveData,
-              ];
+            const mergedCatalogue = catalogueData.map((local) => {
+              const code = Number(local.hotelbeds_code);
+              const live = Number.isInteger(code) && code > 0
+                ? liveByHotelbedsCode.get(String(code))
+                : null;
+
+              if (!live) {
+                return { ...local, priceSource: local.priceSource || "catalogue" };
+              }
+
+              liveByHotelbedsCode.delete(String(code));
+              const livePrice = Number(live.price || live.minRate || 0);
+
+              return {
+                ...local,
+                id: local.id,
+                name: local.name || live.name,
+                location: local.location || live.location,
+                category: local.category || live.category,
+                image: local.image || live.image,
+                description: local.description || live.description,
+                rating: Number(local.rating) > 0
+                  ? Number(local.rating)
+                  : Number(live.rating) || 0,
+                price: Number(local.price || 0),
+                currency: local.currency || "INR",
+                hotelbedsCode: live.hotelbedsCode,
+                rateKey: live.rateKey || "",
+                rates: Array.isArray(live.rates) ? live.rates : [],
+                priceSource: livePrice > 0 ? "live" : "catalogue"
+              };
+            });
+
+            // Only catalogue hotels have local detail and booking records.
+            // Do not append provider-only rows with IDs the booking flow cannot resolve.
+            data = mergedCatalogue;
+
+            if (!liveData.length && active) {
+              setLiveSearchWarning(
+                "No live rates were returned for these dates. Catalogue prices are estimates, not confirmed rates."
+              );
+            } else if (
+              liveData.some((hotel) => !(Number(hotel.price || hotel.minRate) > 0)) &&
+              active
+            ) {
+              setLiveSearchWarning(
+                "Some hotels have no confirmed live price for these dates."
+              );
             }
           } catch (liveError) {
             console.warn(
               "Hotelbeds live search unavailable; keeping local STAYHUB data.",
               liveError
             );
+            if (active) {
+              setLiveSearchWarning(
+                "Live prices could not be verified. Displayed catalogue prices are estimates."
+              );
+            }
           }
         }
 
+        // Add separate date-specific Google Hotels listings from StayingAPI.
+        // These external listings are not local STAYHUB booking records.
+        if (import.meta.env.VITE_ENABLE_STAYINGAPI_SEARCH === "true" && destination.trim() && checkIn && checkOut) {
+          try {
+            const stayingResult = await fetchStayingApiSearch({
+              destination,
+              checkIn,
+              checkOut,
+              adults,
+              children
+            });
+
+            const stayingData = Array.isArray(stayingResult?.data)
+              ? stayingResult.data
+              : [];
+
+            const externalHotels = stayingData
+              .filter((hotel) => hotel && hotel.name)
+              .map((hotel, index) => {
+                const nightlyPrice = Number(hotel.nightlyPrice) || 0;
+                const guestRating = Number(hotel.rating) || 0;
+                const stars = Number(hotel.starRating) || 0;
+                const city = String(
+                  hotel.location?.city || destination.split(",")[0] || destination
+                ).trim();
+
+                return {
+                  id: `stayingapi-${hotel.id || index}`,
+                  name: hotel.name,
+                  location: city,
+                  category: stars >= 5 ? "Luxury" : stars >= 4 ? "Premium" : "Budget",
+                  image: hotel.image || "",
+                  description: `Google Hotels listing · ${Number(hotel.reviewCount) || 0} reviews`,
+                  rating: guestRating,
+                  reviewCount: Number(hotel.reviewCount) || 0,
+                  price: nightlyPrice,
+                  currency: hotel.currency || "INR",
+                  priceSource: nightlyPrice > 0 ? "live" : "catalogue",
+                  source: "stayingapi",
+                  externalOnly: true,
+                  externalUrl: hotel.url || "",
+                  externalTotalPrice: Number(hotel.totalPrice) || 0,
+                  externalCurrency: hotel.currency || "",
+                  externalNights: Number(hotel.nights) || 0,
+                  externalPriceBasis: hotel.priceBasis || "",
+                  providerStarRating: stars
+                };
+              });
+
+            // Avoid showing the same provider result more than once.
+            const seen = new Set();
+            const uniqueExternalHotels = externalHotels.filter((hotel) => {
+              const key = hotel.name.trim().toLowerCase();
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+
+            data = [...data, ...uniqueExternalHotels];
+
+            if (active && uniqueExternalHotels.length > 0) {
+              setLiveSearchWarning(
+                "Live Google Hotels quotes are shown where available. Prices can change on the provider website; external listings are not booked through STAYHUB."
+              );
+            } else if (active) {
+              setLiveSearchWarning(
+                "No live Google Hotels listings were returned. Existing catalogue prices are not confirmed rates."
+              );
+            }
+          } catch (stayingError) {
+            console.warn("StayingAPI search unavailable.", stayingError);
+
+            if (active) {
+              setLiveSearchWarning(
+                "Live Google Hotels search is temporarily unavailable. Existing STAYHUB listings are still shown."
+              );
+            }
+          }
+        }
+
+
+        // Remove obvious non-hotel OSM results and deduplicate listings.
+        const isIrrelevantOsmListing = (hotel) => {
+          if (String(hotel.source || "").toLowerCase() !== "osm") {
+            return false;
+          }
+
+          const text = [
+            hotel.name,
+            hotel.category,
+            hotel.description
+          ].filter(Boolean).join(" ").toLowerCase();
+
+          return /\b(hostel|boys'? hostel|girls'? hostel|sweet shop|sweets|scheme no\.?\s*\d*)\b/i.test(text);
+        };
+
+        const normalizeHotelName = (value) =>
+          String(value || "")
+            .normalize("NFKD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase()
+            .replace(/\b(indore|india|hotel|hotels|the|residency|residence|resort|inn|lodge|suites|suite|guest|house|rooms|room)\b/g, " ")
+            .replace(/[^a-z0-9]+/g, " ")
+            .trim()
+            .replace(/\s+/g, " ");
+
+        const resultPriority = (hotel) => {
+          if (hotel.source === "stayingapi" && Number(hotel.price) > 0) return 100;
+          if (hotel.priceSource === "live" && Number(hotel.price) > 0) return 90;
+          if (hotel.source === "osm") return 10;
+          return 50;
+        };
+
+        const uniqueHotels = new Map();
+
+        for (const hotel of data) {
+          if (
+            !hotel ||
+            !hotel.name ||
+            /\btest hotel\b/i.test(String(hotel.name)) ||
+            isIrrelevantOsmListing(hotel)
+          ) {
+            continue;
+          }
+
+          const key = normalizeHotelName(hotel.name);
+
+          // Keep unrecognisable names separate instead of merging them together.
+          const uniqueKey = key || `id:${hotel.id || uniqueHotels.size}`;
+          const existing = uniqueHotels.get(uniqueKey);
+
+          if (
+            !existing ||
+            resultPriority(hotel) > resultPriority(existing)
+          ) {
+            uniqueHotels.set(uniqueKey, hotel);
+          }
+        }
+
+        data = Array.from(uniqueHotels.values());
+
+        const pricesInINR = await convertHotelPricesToINR(data);
+
         if (active) {
-          setHotels(data);
+          // Use ratings already present in STAYHUB/provider data. Avoid bulk
+          // Google Places lookups so quota exhaustion cannot affect listings.
+          setHotels(pricesInINR);
         }
       } catch (error) {
         if (active) {
@@ -125,7 +470,7 @@ function Hotels() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [searchKey]);
 
   const locations = [...new Set(hotels.map((hotel) => hotel.location))];
 
@@ -143,16 +488,22 @@ function Hotels() {
       const matchesCategory =
         category === "All" || hotel.category === category;
 
+      const hasComparablePrice =
+        !hotel.priceConversionUnavailable &&
+        Number.isFinite(Number(hotel.price)) &&
+        Number(hotel.price) > 0;
+
       const matchesPrice =
         priceRange === "All" ||
-        (priceRange === "Under ₹3000" && hotel.price < 3000) ||
-        (priceRange === "₹3000 - ₹6000" &&
-          hotel.price >= 3000 &&
-          hotel.price <= 6000) ||
-        (priceRange === "₹6000 - ₹10000" &&
-          hotel.price > 6000 &&
-          hotel.price <= 10000) ||
-        (priceRange === "Above ₹10000" && hotel.price > 10000);
+        (hasComparablePrice &&
+          ((priceRange === "Under ₹3000" && Number(hotel.price) < 3000) ||
+          (priceRange === "₹3000 - ₹6000" &&
+            Number(hotel.price) >= 3000 &&
+            Number(hotel.price) <= 6000) ||
+          (priceRange === "₹6000 - ₹10000" &&
+            Number(hotel.price) > 6000 &&
+            Number(hotel.price) <= 10000) ||
+          (priceRange === "Above ₹10000" && Number(hotel.price) > 10000)));
 
       const matchesRating =
         rating === "All" || hotel.rating >= Number(rating);
@@ -167,10 +518,30 @@ function Hotels() {
     });
 
     return [...filtered].sort((a, b) => {
-      if (sort === "Price Low") return a.price - b.price;
-      if (sort === "Price High") return b.price - a.price;
-      if (sort === "Rating") return b.rating - a.rating;
-      return a.id - b.id;
+      const aHasLiveRate =
+        a.priceSource === "live" && Number(a.price) > 0;
+      const bHasLiveRate =
+        b.priceSource === "live" && Number(b.price) > 0;
+
+      // Price sorting: confirmed live rates first; catalogue estimates after.
+      if (sort === "Price Low" || sort === "Price High") {
+        if (aHasLiveRate !== bHasLiveRate) {
+          return Number(bHasLiveRate) - Number(aHasLiveRate);
+        }
+        const priceDifference = Number(a.price || 0) - Number(b.price || 0);
+        return sort === "Price Low" ? priceDifference : -priceDifference;
+      }
+
+      if (sort === "Rating") {
+        return Number(b.rating || 0) - Number(a.rating || 0);
+      }
+
+      // Recommended: hotels with positive live rates appear first.
+      if (aHasLiveRate !== bHasLiveRate) {
+        return Number(bHasLiveRate) - Number(aHasLiveRate);
+      }
+
+      return String(a.name || "").localeCompare(String(b.name || ""));
     });
   }, [
     hotels,
@@ -181,6 +552,54 @@ function Hotels() {
     rating,
     sort
   ]);
+
+  useEffect(() => {
+    if (!returnState || loading || !filteredHotels.length) return;
+
+    const targetId = `stayhub-hotel-${returnState.hotelId}`;
+    let attempts = 0;
+    let cancelled = false;
+
+    const restorePosition = () => {
+      if (cancelled) return;
+      const element = document.getElementById(targetId);
+
+      if (element) {
+        element.scrollIntoView({ block: "center", behavior: "instant" });
+      } else if (Number.isFinite(returnState.scrollY)) {
+        window.scrollTo(0, returnState.scrollY);
+      }
+
+      if (!element && attempts++ < 12) {
+        setTimeout(restorePosition, 100);
+      }
+    };
+
+    const timer = setTimeout(restorePosition, 150);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [returnState, loading, filteredHotels.length]);
+
+  const searchLiveRates = () => {
+    if (!checkInDate || !checkOutDate) {
+      alert("Please select both check-in and check-out dates to search live prices.");
+      return;
+    }
+    if (checkOutDate <= checkInDate) {
+      alert("Check-out date must be after check-in date.");
+      return;
+    }
+
+    const next = new URLSearchParams();
+    if (search.trim()) next.set("destination", search.trim());
+    next.set("checkIn", checkInDate);
+    next.set("checkOut", checkOutDate);
+    next.set("adults", adultsCount || "2");
+    next.set("rooms", params.get("rooms") || "1");
+    navigate(`/hotels?${next.toString()}`);
+  };
 
   const clearFilters = () => {
     setSearch("");
@@ -249,6 +668,28 @@ function Hotels() {
     } catch (error) {
       console.error("WISHLIST ERROR:", error);
       alert(error.message || "Unable to update wishlist.");
+    }
+  };
+
+  const rememberListing = (hotel) => {
+    try {
+      sessionStorage.setItem("stayhub-listing-return", JSON.stringify({
+        url: window.location.pathname + window.location.search,
+        hotelId: Number(hotel.id),
+        scrollY: window.scrollY,
+        search,
+        checkInDate,
+        checkOutDate,
+        adultsCount,
+        location,
+        category,
+        priceRange,
+        rating,
+        sort,
+        filtersOpen
+      }));
+    } catch (error) {
+      console.warn("Could not save listing position.", error);
     }
   };
 
@@ -588,6 +1029,7 @@ function Hotels() {
           padding: "35px 20px 60px"
         }}
       >
+
         {loading ? (
           <div
             style={{
@@ -673,6 +1115,7 @@ function Hotels() {
 
               return (
                 <div
+                  id={`stayhub-hotel-${hotel.id}`}
                   key={hotel.id}
                   style={{
                     background: "white",
@@ -691,7 +1134,7 @@ function Hotels() {
                     }}
                   >
                     <img
-                      src={hotel.image}
+                      src={safeHotelImage(hotel.image)} onError={handleHotelImageError}
                       alt={hotel.name}
                       style={{
                         width: "100%",
@@ -730,9 +1173,17 @@ function Hotels() {
                         fontWeight: 800
                       }}
                     >
-                      ⭐ {hotel.rating}
+                      {Number(hotel.rating) > 0
+                        ? `⭐ ${Number(hotel.rating).toFixed(1)}`
+                        : "Not rated"}
+                      {Number(hotel.reviewCount) > 0 && (
+                        <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 600 }}>
+                          ({Number(hotel.reviewCount).toLocaleString("en-IN")} reviews)
+                        </span>
+                      )}
                     </span>
 
+                    {!hotel.externalOnly && (
                     <button
                       type="button"
                       onClick={() => changeWishlist(hotel.id)}
@@ -756,6 +1207,7 @@ function Hotels() {
                     >
                       {saved ? "♥" : "♡"}
                     </button>
+                  )}
                   </div>
 
                   <div style={{ padding: 18 }}>
@@ -805,7 +1257,15 @@ function Hotels() {
                             fontSize: 12
                           }}
                         >
-                          Starting from
+                          {hotel.priceSource === "live" && Number(hotel.price) > 0
+                            ? "Live price for selected dates"
+                            : hotel.priceSource === "demo-estimate"
+                              ? "Demo estimate (not verified)"
+                              : hotel.priceSource === "estimate"
+                                ? "Estimated starting price · not live-confirmed"
+                                : params.get("checkIn") && params.get("checkOut")
+                                  ? "Catalogue estimate (not live-confirmed)"
+                                  : "Starting from"}
                         </div>
 
                         <div
@@ -814,7 +1274,28 @@ function Hotels() {
                             fontWeight: 800
                           }}
                         >
-                          ₹{hotel.price.toLocaleString("en-IN")}
+                          {Number(hotel.price) > 0 ? (
+                            (() => {
+                              const amount = Number(hotel.price);
+                              const currency = String(hotel.currency || "INR").toUpperCase();
+
+                              try {
+                                return new Intl.NumberFormat("en-IN", {
+                                  style: "currency",
+                                  currency,
+                                  maximumFractionDigits: 0,
+                                }).format(amount);
+                              } catch {
+                                return `${amount.toLocaleString("en-IN")} ${currency}`;
+                              }
+                            })()
+                          ) : (
+                            hotel.priceConversionUnavailable
+                              ? "INR conversion unavailable"
+                              : params.get("checkIn") && params.get("checkOut")
+                                ? "Price unavailable for selected dates"
+                                : "Select dates to see price"
+                          )}
                         </div>
 
                         <div
@@ -827,21 +1308,48 @@ function Hotels() {
                         </div>
                       </div>
 
-                      <Link
-                        to={keepSearchParams(hotel)}
-                        style={{
-                          background: "#4f46e5",
-                          color: "white",
-                          textDecoration: "none",
-                          padding: "11px 16px",
-                          borderRadius: 10,
-                          fontWeight: 700,
-                          fontSize: 14,
-                          whiteSpace: "nowrap"
-                        }}
-                      >
-                        View Details
-                      </Link>
+                      {hotel.externalOnly ? (
+                        hotel.externalUrl ? (
+                          <a
+                            href={hotel.externalUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              background: "#4f46e5",
+                              color: "white",
+                              textDecoration: "none",
+                              padding: "11px 16px",
+                              borderRadius: 10,
+                              fontWeight: 700,
+                              fontSize: 14,
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            View Offer ↗
+                          </a>
+                        ) : (
+                          <span style={{ color: "#64748b", fontSize: 13 }}>
+                            Offer link unavailable
+                          </span>
+                        )
+                      ) : (
+                        <Link
+                          to={keepSearchParams(hotel)}
+                          onClick={() => rememberListing(hotel)}
+                          style={{
+                            background: "#4f46e5",
+                            color: "white",
+                            textDecoration: "none",
+                            padding: "11px 16px",
+                            borderRadius: 10,
+                            fontWeight: 700,
+                            fontSize: 14,
+                            whiteSpace: "nowrap"
+                          }}
+                        >
+                          View Details
+                        </Link>
+                      )}
                     </div>
                   </div>
                 </div>

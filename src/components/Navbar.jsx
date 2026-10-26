@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import logo from "../assets/logo.svg";
+const logo = "/stayhub-logo.svg";
 
 function Navbar() {
   const navigate = useNavigate();
