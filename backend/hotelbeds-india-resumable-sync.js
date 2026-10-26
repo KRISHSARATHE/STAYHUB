@@ -334,6 +334,16 @@ async function main() {
 
         indiaCount += 1;
 
+        const duplicate = await client.query(
+          `SELECT id FROM hotels
+           WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
+             AND LOWER(TRIM(location)) = LOWER(TRIM($2))
+           LIMIT 1`,
+          [hotel.name, hotel.city]
+        );
+
+        if (duplicate.rowCount > 0) continue;
+
         await client.query(
           `
           INSERT INTO hotels (
@@ -360,35 +370,7 @@ async function main() {
             $10,$11,$12,$13,$14,TRUE
           )
           ON CONFLICT (hotelbeds_code)
-          DO UPDATE SET
-            name = EXCLUDED.name,
-            location = EXCLUDED.location,
-            category = EXCLUDED.category,
-            rating = EXCLUDED.rating,
-            image = CASE
-              WHEN EXCLUDED.image <> '' THEN EXCLUDED.image
-              ELSE hotels.image
-            END,
-            description = CASE
-              WHEN EXCLUDED.description <> '' THEN EXCLUDED.description
-              ELSE hotels.description
-            END,
-            hotelbeds_destination_code =
-              EXCLUDED.hotelbeds_destination_code,
-            hotelbeds_country_code =
-              EXCLUDED.hotelbeds_country_code,
-            hotelbeds_last_synced_at =
-              EXCLUDED.hotelbeds_last_synced_at,
-            hotelbeds_city =
-              EXCLUDED.hotelbeds_city,
-            hotelbeds_latitude =
-              EXCLUDED.hotelbeds_latitude,
-            hotelbeds_longitude =
-              EXCLUDED.hotelbeds_longitude,
-            hotelbeds_address =
-              EXCLUDED.hotelbeds_address,
-            hotelbeds_description =
-              EXCLUDED.hotelbeds_description
+          DO NOTHING
           `,
           [
             hotel.name,

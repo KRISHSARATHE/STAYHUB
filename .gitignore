@@ -29,3 +29,29 @@ backend/.env
 
 # Hotelbeds certificates
 *.pem
+.env*
+
+# Local backups and recovery files
+*.backup
+*.backup-*
+*.before-*
+*.bak
+*.old
+*.dump
+*backup*/
+backups/
+
+# Local state and generated reports
+backend/.hotelbeds-*-state.json
+backend/reports/
+backend/stayhub-hotel-audit-preview.json
+
+# Local secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+
+backend/.hotelbeds-india-sync-state.json
