@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import pg from "pg";
 import crypto from "node:crypto";
+import nodemailer from "nodemailer";
 import { OAuth2Client } from "google-auth-library";
 import hotels from "../src/assets/hotels.js";
 import { searchAvailability, mapAvailabilityResponse, checkRate, createBooking } from "./hotelbeds.js";
@@ -778,16 +779,30 @@ app.post("/api/admin/login", async (req, res) => {
 const authFrontendUrl = () => (process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://stayhub-flax-two.vercel.app" : "http://localhost:5173")).replace(/\/$/, "");
 const authBackendUrl = (req) => (process.env.BACKEND_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+let smtpTransport;
 async function sendAuthEmail(to, subject, body) {
-  if (!process.env.RESEND_API_KEY || !process.env.MAIL_FROM) throw new Error("Email provider not configured");
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: process.env.MAIL_FROM, to: [to], subject, text: body }),
-    signal: AbortSignal.timeout(15000),
+  const smtpUser = process.env.SMTP_USER?.trim();
+  const smtpPass = process.env.SMTP_PASS?.replace(/\s/g, "");
+  if (!smtpUser || !smtpPass) throw new Error("SMTP credentials are not configured");
+  if (!smtpTransport) {
+    smtpTransport = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || "smtp.gmail.com",
+      port: Number(process.env.SMTP_PORT || 465),
+      secure: Number(process.env.SMTP_PORT || 465) === 465,
+      auth: { user: smtpUser, pass: smtpPass },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 20000,
+    });
+  }
+  await smtpTransport.sendMail({
+    from: { name: "STAYHUB", address: smtpUser },
+    to,
+    subject,
+    text: body,
   });
-  if (!response.ok) { console.error("Auth email provider rejected request:", response.status); throw new Error("Email provider rejected request"); }
 }
+
 const verificationAttempts = new Map();
 function verificationRateLimited(req, email) {
   const key = `${req.ip || "unknown"}:${email}`;
@@ -859,7 +874,7 @@ app.post("/api/auth/register", async (req, res) => {
     try {
       await sendAuthEmail(normalizedEmail, "Verify your STAYHUB email", `Welcome to STAYHUB!\n\nVerify your email within 30 minutes:\n${verificationUrl}\n\nIf you did not sign up, ignore this message.`);
     } catch (emailError) {
-      console.error("Signup verification email failed:", emailError.message);
+      console.error("Signup verification email failed:", emailError.code || emailError.message);
       return res.status(503).json({ message: "Account created, but verification email could not be sent. Use Resend Verification to try again.", verificationRequired: true });
     }
     return res.status(201).json({
@@ -968,20 +983,12 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     const token = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const resetUrl = `${authFrontendUrl()}/reset-password?token=${token}`;
-    const apiKey = process.env.RESEND_API_KEY;
-    if (!apiKey || !process.env.MAIL_FROM) {
-      if (process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_RESET_LINK === "true") {
-        await query(`INSERT INTO password_reset_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '30 minutes') ON CONFLICT (user_id) DO UPDATE SET token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at`, [found.rows[0].id, tokenHash]);
-        return res.json({ ...generic, devResetUrl: resetUrl });
-      }
-      console.error("Password reset email not configured: set RESEND_API_KEY and MAIL_FROM");
-      return res.status(503).json({ message: "Password reset email service is not configured." });
+    try {
+      await sendAuthEmail(email, "Reset your STAYHUB password", `Open this link to reset your password (expires in 30 minutes): ${resetUrl}\nIf you did not request this, ignore this email.`);
+    } catch (mailError) {
+      console.error("Password reset SMTP failure:", mailError.code || mailError.message);
+      return res.status(502).json({ message: "Could not send reset email. Try again later." });
     }
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: process.env.MAIL_FROM, to: [email], subject: "Reset your STAYHUB password", text: `Open this link to reset your password (expires in 30 minutes): ${resetUrl}\nIf you did not request this, ignore this email.` })
-    });
-    if (!response.ok) { console.error("Reset email provider rejected request:", response.status); return res.status(502).json({ message: "Could not send reset email. Try again later." }); }
     await query(`INSERT INTO password_reset_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '30 minutes') ON CONFLICT (user_id) DO UPDATE SET token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at`, [found.rows[0].id, tokenHash]);
     return res.json(generic);
   } catch (error) { console.error("Forgot password:", error); return res.status(500).json({ message: "Unable to process reset request." }); }
