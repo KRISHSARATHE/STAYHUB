@@ -2,13 +2,46 @@ const API_BASE_URL =
   import.meta.env.VITE_API_URL || "http://localhost:5050/api";
 
 export async function apiRequest(endpoint, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  const url = `${API_BASE_URL}${endpoint}`;
+  const method = String(options.method || "GET").toUpperCase();
+  const canRetry = method === "GET" && !options.signal;
+  const maxAttempts = canRetry ? 3 : 1;
+
+  let response;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+        signal: options.signal || AbortSignal.timeout(90000),
+      });
+
+      if (
+        canRetry &&
+        [502, 503, 504].includes(response.status) &&
+        attempt < maxAttempts
+      ) {
+        await new Promise(resolve =>
+          setTimeout(resolve, attempt * 2000)
+        );
+        continue;
+      }
+
+      break;
+    } catch (error) {
+      if (!canRetry || attempt === maxAttempts) {
+        throw error;
+      }
+
+      await new Promise(resolve =>
+        setTimeout(resolve, attempt * 2000)
+      );
+    }
+  }
 
   const text = await response.text();
 
@@ -31,6 +64,23 @@ export async function fetchHotels() {
   return result.data || [];
 }
 
+export async function fetchOsmHotels(city) {
+  const query = new URLSearchParams({ city: String(city || "").trim() });
+  const result = await apiRequest(`/osm/hotels?${query.toString()}`);
+  return result.data || [];
+}
+
+export async function fetchStayingApiSearch(params = {}) {
+  const query = new URLSearchParams();
+
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== "") {
+      query.set(key, String(value));
+    }
+  });
+
+  return apiRequest(`/stayingapi/search?${query.toString()}`);
+}
 
 export async function fetchHotelbedsSearch(params = {}) {
   const query = new URLSearchParams();
