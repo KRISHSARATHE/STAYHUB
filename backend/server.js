@@ -5,10 +5,12 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import pg from "pg";
 import crypto from "node:crypto";
+import { OAuth2Client } from "google-auth-library";
 import hotels from "../src/assets/hotels.js";
 import { searchAvailability, mapAvailabilityResponse, checkRate, createBooking } from "./hotelbeds.js";
+import { discoverOsmHotels } from "./osm.js";
 
-dotenv.config();
+dotenv.config({ path: new URL("./.env", import.meta.url), override: true });
 
 const { Pool } = pg;
 const app = express();
@@ -16,6 +18,7 @@ const port = Number(process.env.PORT || 5000);
 const jwtSecret = process.env.JWT_SECRET || "stayhub-dev-secret-change-me";
 const adminEmail = (process.env.ADMIN_EMAIL || "admin@stayhub.com").trim().toLowerCase();
 const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
+const googleOAuthClient = new OAuth2Client();
 
 app.use(cors({
   origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",").map((v) => v.trim()) : true,
@@ -46,11 +49,19 @@ const mapHotel = (row) => ({
   location: row.location,
   category: row.category,
   price: Number(row.price),
+  ratingSource: row.rating_source || 'unknown',
+  priceSource: row.price_source || (Number(row.price) > 0 ? 'catalogue' : 'estimate'),
   rating: Number(row.rating),
   image: row.image,
   description: row.description || "",
+  amenities: Array.isArray(row.amenities) ? row.amenities : [],
   totalRooms: Number(row.total_rooms || 20),
   isActive: row.is_active !== false,
+  source: row.source || "stayhub",
+  sourceId: row.source_id || null,
+  hotelbeds_code: row.hotelbeds_code == null
+    ? null
+    : Number(row.hotelbeds_code),
 });
 
 const mapBooking = (row) => ({
@@ -118,6 +129,7 @@ async function ensureSchema() {
   `);
 
   await query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`);
+
 
   // Verification migration for existing STAYHUB databases.
   await query(`
@@ -187,6 +199,19 @@ async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id);
   `);
 
+  await query(`
+    ALTER TABLE hotels
+      ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'stayhub',
+      ADD COLUMN IF NOT EXISTS source_id TEXT,
+      ADD COLUMN IF NOT EXISTS price_source VARCHAR(40) NOT NULL DEFAULT 'catalogue'
+  `);
+
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hotels_source_source_id
+    ON hotels (source, source_id)
+    WHERE source_id IS NOT NULL
+  `);
+
   const countResult = await query("SELECT COUNT(*)::int AS count FROM hotels");
   if (countResult.rows[0].count === 0) {
     for (const hotel of hotels) {
@@ -199,6 +224,8 @@ async function ensureSchema() {
     }
     await query(`SELECT setval(pg_get_serial_sequence('hotels','id'), GREATEST((SELECT MAX(id) FROM hotels),1))`);
   }
+
+  await query(`CREATE TABLE IF NOT EXISTS password_reset_tokens (user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`);
 }
 
 function validateDates(checkIn, checkOut) {
@@ -232,6 +259,206 @@ app.get("/api/health", async (_req, res) => {
     res.json({ ok: true, service: "stayhub-api", database: "connected", time: new Date().toISOString() });
   } catch (error) {
     res.status(503).json({ ok: false, service: "stayhub-api", database: "unavailable", message: error.message });
+  }
+});
+
+
+// StayingAPI live Google Hotels search.
+// The API key stays on the backend and is never sent to the browser.
+app.get("/api/stayingapi/search", async (req, res) => {
+  const apiKey = process.env.STAYINGAPI_KEY;
+
+  if (!apiKey) {
+    return res.status(503).json({
+      success: false,
+      message: "StayingAPI is not configured on the backend."
+    });
+  }
+
+  const destination = String(req.query.destination || "").trim();
+  const checkIn = String(req.query.checkIn || "");
+  const checkOut = String(req.query.checkOut || "");
+  const adults = Number(req.query.adults || 2);
+  const children = Number(req.query.children || 0);
+
+  const validDate = (value) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) &&
+    new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+
+  if (
+    !destination ||
+    destination.length > 150 ||
+    !validDate(checkIn) ||
+    !validDate(checkOut) ||
+    checkOut <= checkIn ||
+    !Number.isInteger(adults) ||
+    adults < 1 ||
+    adults > 20 ||
+    !Number.isInteger(children) ||
+    children < 0 ||
+    children > 10
+  ) {
+    return res.status(400).json({
+      success: false,
+      message: "Provide a destination, valid check-in/check-out dates, and valid guest counts."
+    });
+  }
+
+  const apiHeaders = {
+    Authorization: `Bearer ${apiKey}`,
+    Accept: "application/json"
+  };
+
+  const searchUrl = new URL("https://api.stayingapi.com/v1/search");
+  searchUrl.searchParams.set("location", destination);
+  searchUrl.searchParams.set("checkIn", checkIn);
+  searchUrl.searchParams.set("checkOut", checkOut);
+  searchUrl.searchParams.set("adults", String(adults));
+  searchUrl.searchParams.set("children", String(children));
+  searchUrl.searchParams.set("platforms", "google");
+  searchUrl.searchParams.set("limit", "5");
+
+  try {
+    let response = await fetch(searchUrl, {
+      headers: apiHeaders,
+      signal: AbortSignal.timeout(30000)
+    });
+
+    let body = await response.json().catch(() => ({}));
+
+    if (!response.ok && response.status !== 202) {
+      console.error("StayingAPI search failed:", response.status);
+      return res.status(502).json({
+        success: false,
+        message: "StayingAPI could not complete the hotel search.",
+        providerStatus: response.status
+      });
+    }
+
+    // Some searches return a job ID and complete asynchronously.
+    if (response.status === 202) {
+      const jobId = body?.data?.jobId;
+
+      if (!jobId) {
+        return res.status(502).json({
+          success: false,
+          message: "StayingAPI accepted the search but did not return a job ID."
+        });
+      }
+
+      let completed = false;
+
+      for (let attempt = 0; attempt < 60; attempt++) {
+        const retryAfter = Number(response.headers.get("Retry-After"));
+        const waitSeconds = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter, 15)
+          : 5;
+
+        await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000));
+
+        response = await fetch(
+          `https://api.stayingapi.com/v1/jobs/${encodeURIComponent(jobId)}`,
+          {
+            headers: apiHeaders,
+            signal: AbortSignal.timeout(30000)
+          }
+        );
+
+        body = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          return res.status(502).json({
+            success: false,
+            message: "Unable to retrieve the StayingAPI search results."
+          });
+        }
+
+        const job = body?.data;
+
+        if (job?.status === "completed") {
+          body = {
+            data: job.result,
+            meta: body.meta
+          };
+          completed = true;
+          break;
+        }
+
+        if (job?.status === "failed") {
+          return res.status(502).json({
+            success: false,
+            message: "StayingAPI search failed.",
+            creditsCharged: body?.meta?.creditsCharged ?? 0
+          });
+        }
+      }
+
+      if (!completed) {
+        return res.status(504).json({
+          success: false,
+          message: "The hotel search is taking longer than expected. Please try again later.",
+          jobId
+        });
+      }
+    }
+
+    const rawResults = Array.isArray(body?.data)
+      ? body.data
+      : Array.isArray(body?.data?.results)
+        ? body.data.results
+        : Array.isArray(body?.data?.data)
+          ? body.data.data
+          : [];
+
+    const results = rawResults.map((hotel) => ({
+      id: hotel.id || hotel.platformListingId || null,
+      name: hotel.name || "",
+      location: hotel.location || {},
+      platform: hotel.platform || hotel.price?.platform || "google",
+      url: hotel.url || hotel.price?.url || "",
+      image: (() => {
+        const firstImage = Array.isArray(hotel.images) ? hotel.images[0] : "";
+        if (typeof firstImage === "string") return firstImage;
+        if (firstImage && typeof firstImage === "object") {
+          const candidate =
+            firstImage.url ||
+            firstImage.imageUrl ||
+            firstImage.image_url ||
+            firstImage.thumbnail ||
+            "";
+          return typeof candidate === "string" ? candidate : "";
+        }
+        return "";
+      })(),
+      starRating: hotel.starRating ?? null,
+      rating: hotel.guestRating ?? null,
+      reviewCount: hotel.reviewCount ?? 0,
+      amenities: Array.isArray(hotel.amenities) ? hotel.amenities : [],
+      currency: hotel.price?.currency || "",
+      nightlyPrice: Number(hotel.price?.nightlyPrice) || 0,
+      totalPrice: Number(hotel.price?.totalPrice) || 0,
+      nights: Number(hotel.price?.nights) || 0,
+      priceBasis: hotel.price?.priceBasis || "",
+      source: "stayingapi"
+    }));
+
+    return res.json({
+      success: true,
+      source: "stayingapi",
+      destination,
+      checkIn,
+      checkOut,
+      data: results,
+      creditsCharged: body?.meta?.creditsCharged ?? null
+    });
+  } catch (error) {
+    console.error("StayingAPI request error:", error.message);
+
+    return res.status(502).json({
+      success: false,
+      message: "Could not reach StayingAPI. Please try again later."
+    });
   }
 });
 
@@ -274,6 +501,7 @@ app.get("/api/hotelbeds/availability", async (req, res) => {
       childAges = "",
       rooms = 1,
       hotelCodes = "",
+      destination = "",
     } = req.query;
 
     const parsedChildAges = String(childAges)
@@ -294,6 +522,7 @@ app.get("/api/hotelbeds/availability", async (req, res) => {
       childAges: parsedChildAges,
       rooms: Number(rooms),
       hotelCodes: parsedHotelCodes,
+      destination: String(destination || ""),
     });
 
     res.json({
@@ -308,6 +537,176 @@ app.get("/api/hotelbeds/availability", async (req, res) => {
       success: false,
       source: "hotelbeds",
       message: error.message,
+    });
+  }
+});
+
+
+// Live Google Places rating lookup. Google content is not stored in PostgreSQL.
+app.get("/api/hotels/:id/google-rating", async (req, res) => {
+  try {
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+    if (!apiKey) {
+      return res.status(503).json({
+        message: "Google Places rating service is not configured."
+      });
+    }
+
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: "Invalid hotel ID." });
+    }
+
+    const result = await query(
+      "SELECT id, name, location FROM hotels WHERE id=$1 AND is_active=TRUE",
+      [id]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({ message: "Hotel not found." });
+    }
+
+    const hotel = result.rows[0];
+    const locationText = String(hotel.location || "").trim();
+    const city = locationText.split(",")[0].split("-")[0].trim();
+
+    const response = await fetch(
+      "https://places.googleapis.com/v1/places:searchText",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask":
+            "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.priceRange"
+        },
+        body: JSON.stringify({
+          textQuery: `${hotel.name}, ${hotel.location}, India`,
+          maxResultCount: 5
+        }),
+        signal: AbortSignal.timeout(10000)
+      }
+    );
+
+    const payload = await response.json();
+
+    if (!response.ok) {
+      console.error(
+        "Google Places rating request failed:",
+        JSON.stringify({
+          httpStatus: response.status,
+          errorStatus: payload.error?.status || "Unknown error",
+          errorMessage: payload.error?.message || "No error message returned"
+        })
+      );
+      return res.status(502).json({
+        message: "Google Places rating lookup failed. Please try again later."
+      });
+    }
+
+    const normalize = (value) =>
+      String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+    const ignored = new Set([
+      "the", "hotel", "resort", "spa", "and", "by", "at", "a", "an"
+    ]);
+
+    const tokens = normalize(hotel.name)
+      .split(" ")
+      .filter((token) => token.length > 2 && !ignored.has(token));
+
+    const normalizedLocation = normalize(locationText);
+    const cityAliasGroups = [
+      ["bangalore", "bengaluru"],
+      ["bombay", "mumbai"],
+      ["calcutta", "kolkata"],
+      ["madras", "chennai"],
+      ["cochin", "kochi"],
+      ["trivandrum", "thiruvananthapuram"],
+      ["gurgaon", "gurugram"]
+    ];
+    const cityTerms = new Set();
+    const locationWords = normalizedLocation.split(" ").filter(Boolean);
+    for (const group of cityAliasGroups) {
+      if (group.some((term) => locationWords.includes(term))) {
+        group.forEach((term) => cityTerms.add(term));
+      }
+    }
+    // Locations in the catalogue are inconsistently formatted (e.g.
+    // "BANGALORE-KARNATAKA" or "RAJASTHAN-1. JAIPUR"). Match meaningful
+    // location words while excluding generic country/state labels.
+    const ignoredLocationWords = new Set([
+      "india", "karnataka", "maharashtra", "rajasthan", "kerala", "goa",
+      "gujarat", "punjab", "haryana", "tamil", "nadu", "madhya", "pradesh",
+      "uttar", "west", "bengal", "andhra", "telangana", "assam", "himachal",
+      "uttarakhand", "odisha", "bihar", "jharkhand", "chandigarh", "zone",
+      "north", "south", "east", "west", "in", "the"
+    ]);
+    locationWords.forEach((word) => {
+      if (word.length > 2 && !/^\d+$/.test(word) && !ignoredLocationWords.has(word)) {
+        cityTerms.add(word);
+      }
+    });
+
+    const candidates = (payload.places || []).map((place) => {
+      const name = normalize(place.displayName?.text);
+      const address = normalize(place.formattedAddress);
+      const matchedTokens = tokens.filter((token) => name.includes(token));
+      const nameCoverage = tokens.length
+        ? matchedTokens.length / tokens.length
+        : 0;
+
+      return {
+        place,
+        nameCoverage,
+        cityMatches: [...cityTerms].some((term) => address.includes(term))
+      };
+    });
+
+    const best = candidates
+      .filter((candidate) =>
+        candidate.cityMatches && candidate.nameCoverage >= 0.6
+      )
+      .sort((a, b) => b.nameCoverage - a.nameCoverage)[0];
+
+    if (!best) {
+      return res.json({
+        data: { matched: false, rating: null, reviewCount: null }
+      });
+    }
+
+    const place = best.place;
+
+    return res.json({
+      data: {
+        matched: true,
+        name: place.displayName?.text || "",
+        address: place.formattedAddress || "",
+        rating: Number.isFinite(place.rating) ? place.rating : null,
+        reviewCount: Number.isFinite(place.userRatingCount)
+          ? place.userRatingCount
+          : null,
+        placeId: place.id || "",
+        googleMapsUrl: place.googleMapsUri || "",
+        priceRange: place.priceRange ? {
+          currencyCode:
+            place.priceRange.startPrice?.currencyCode ||
+            place.priceRange.endPrice?.currencyCode || "",
+          startPrice: place.priceRange.startPrice
+            ? Number(place.priceRange.startPrice.units || 0) +
+              Number(place.priceRange.startPrice.nanos || 0) / 1e9
+            : null,
+          endPrice: place.priceRange.endPrice
+            ? Number(place.priceRange.endPrice.units || 0) +
+              Number(place.priceRange.endPrice.nanos || 0) / 1e9
+            : null
+        } : null
+      }
+    });
+  } catch (error) {
+    console.error("Google Places rating lookup error:", error.message);
+    return res.status(502).json({
+      message: "Could not retrieve the Google rating right now."
     });
   }
 });
@@ -503,6 +902,64 @@ app.get("/api/auth/verify/:token", async (req, res) => {
   }
 });
 
+
+// Password reset: one-time, SHA-256 hashed tokens, 30-minute expiry.
+const resetAttempts = new Map();
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ message: "Enter a valid email address." });
+  const ip = req.ip || "unknown";
+  const key = `${ip}:${email}`;
+  const now = Date.now();
+  const previous = resetAttempts.get(key) || [];
+  const recent = previous.filter(t => now - t < 60 * 60 * 1000);
+  if (recent.length >= 5) return res.status(429).json({ message: "Too many attempts. Try again later." });
+  resetAttempts.set(key, [...recent, now]);
+  const generic = { message: "If this email has a STAYHUB account, a password reset link will be sent." };
+  try {
+    const found = await query("SELECT id FROM users WHERE email=$1 AND password_hash IS NOT NULL", [email]);
+    if (!found.rowCount) return res.json(generic);
+    const token = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+    const resetUrl = `${(process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "")}/reset-password?token=${token}`;
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey || !process.env.MAIL_FROM) {
+      if (process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_RESET_LINK === "true") {
+        await query(`INSERT INTO password_reset_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '30 minutes') ON CONFLICT (user_id) DO UPDATE SET token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at`, [found.rows[0].id, tokenHash]);
+        return res.json({ ...generic, devResetUrl: resetUrl });
+      }
+      console.error("Password reset email not configured: set RESEND_API_KEY and MAIL_FROM");
+      return res.status(503).json({ message: "Password reset email service is not configured." });
+    }
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: process.env.MAIL_FROM, to: [email], subject: "Reset your STAYHUB password", text: `Open this link to reset your password (expires in 30 minutes): ${resetUrl}\nIf you did not request this, ignore this email.` })
+    });
+    if (!response.ok) { console.error("Reset email provider rejected request:", response.status); return res.status(502).json({ message: "Could not send reset email. Try again later." }); }
+    await query(`INSERT INTO password_reset_tokens (user_id,token_hash,expires_at) VALUES ($1,$2,NOW()+INTERVAL '30 minutes') ON CONFLICT (user_id) DO UPDATE SET token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at`, [found.rows[0].id, tokenHash]);
+    return res.json(generic);
+  } catch (error) { console.error("Forgot password:", error); return res.status(500).json({ message: "Unable to process reset request." }); }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  const token = String(req.body?.token || "");
+  const password = String(req.body?.password || "");
+  if (!/^[a-f0-9]{64}$/.test(token) || password.length < 8 || password.length > 128) return res.status(400).json({ message: "Invalid link or password (8–128 characters required)." });
+  const hash = crypto.createHash("sha256").update(token).digest("hex");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query("SELECT user_id FROM password_reset_tokens WHERE token_hash=$1 AND expires_at>NOW() FOR UPDATE", [hash]);
+    if (!found.rowCount) { await client.query("ROLLBACK"); return res.status(400).json({ message: "Reset link is invalid or expired." }); }
+    const passwordHash = await bcrypt.hash(password, 12);
+    await client.query("UPDATE users SET password_hash=$1 WHERE id=$2", [passwordHash, found.rows[0].user_id]);
+    await client.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [found.rows[0].user_id]);
+    await client.query("COMMIT");
+    return res.json({ message: "Password changed successfully. You can now log in." });
+  } catch (error) { await client.query("ROLLBACK"); console.error("Reset password:", error); return res.status(500).json({ message: "Unable to reset password." }); }
+  finally { client.release(); }
+});
+
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
@@ -523,6 +980,47 @@ app.post("/api/auth/login", async (req, res) => {
   } catch (error) { res.status(500).json({ message: "Login failed.", error: error.message }); }
 });
 
+
+app.post("/api/auth/google", async (req, res) => {
+  try {
+    const credential = String(req.body?.credential || "");
+    const clientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID;
+
+    if (!clientId) {
+      return res.status(503).json({ message: "Google sign-in is not configured on the backend." });
+    }
+    if (!credential) {
+      return res.status(400).json({ message: "Google credential is required." });
+    }
+
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken: credential,
+      audience: clientId,
+    });
+    const payload = ticket.getPayload();
+
+    if (!payload?.sub || !payload.email || payload.email_verified !== true) {
+      return res.status(401).json({ message: "Google account email could not be verified." });
+    }
+
+    const row = await getOrCreateUser({
+      name: payload.name || payload.email.split("@")[0],
+      email: payload.email,
+      phone: "",
+      provider: "google",
+      verified: true,
+    });
+
+    res.json({
+      data: sanitizeUser(row),
+      token: makeToken({ sub: row.id, role: "user", email: row.email }),
+    });
+  } catch (error) {
+    console.error("Google authentication failed:", error.message);
+    res.status(401).json({ message: "Google sign-in failed. Please try again." });
+  }
+});
+
 app.post("/api/users/sync", async (req, res) => {
   try {
     const row = await getOrCreateUser(req.body || {});
@@ -534,6 +1032,15 @@ app.post("/api/bookings", async (req, res) => {
   const client = await pool.connect();
   try {
     const body = req.body || {};
+
+
+if (body.hotelbedsRateKey) {
+  return res.status(409).json({
+    message: "Hotelbeds booking is not yet connected. No supplier booking was created."
+  });
+}
+
+
     const nights = validateDates(body.checkIn, body.checkOut);
     const rooms = Number(body.rooms || 1);
     const adults = Number(body.adults || 1);
@@ -568,7 +1075,11 @@ app.post("/api/bookings", async (req, res) => {
       verified: Boolean(body.verified || body.emailVerified),
     });
     const id = body.id || `STH-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
-    const roomAmount = nights * Number(hotel.price) * rooms;
+    const unitPrice = Number(hotel.price);
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      throw new Error("Price unavailable for this hotel. Please choose another hotel or try again later.");
+    }
+    const roomAmount = nights * unitPrice * rooms;
     const serviceFee = Number(body.serviceFee || 0);
     const tax = Number(body.tax || 0);
 
@@ -627,8 +1138,9 @@ app.post("/api/bookings", async (req, res) => {
 
     // College/demo payment flow.
     // Real gateway can be connected later.
-    const paymentStatus = "Paid";
-    const paidAt = new Date();
+    // Demo payments are simulated; other methods need gateway confirmation.
+    const paymentStatus = paymentMethod === "Demo Payment" ? "Paid" : "Pending";
+    const paidAt = paymentStatus === "Paid" ? new Date() : null;
 
     const total = Math.max(
       0,
@@ -845,6 +1357,51 @@ app.use((err, _req, res, _next) => {
 
 ensureSchema().then(() => {
   
+app.get("/api/osm/hotels", async (req, res) => {
+  try {
+    const result = await discoverOsmHotels(req.query.city);
+    const savedRows = [];
+
+    for (const hotel of result.hotels) {
+      const saved = await query(
+        `INSERT INTO hotels
+          (name, location, category, price, rating, image, description,
+           total_rooms, source, source_id, price_source, is_active)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'osm',$9,'demo-estimate',TRUE)
+         ON CONFLICT (source, source_id) WHERE source_id IS NOT NULL
+         DO UPDATE SET
+           name = EXCLUDED.name,
+           location = EXCLUDED.location,
+           category = EXCLUDED.category,
+           description = EXCLUDED.description,
+           price_source = 'demo-estimate',
+           is_active = TRUE
+         RETURNING *`,
+        [
+          hotel.name, hotel.location, hotel.category, hotel.price,
+          hotel.rating, hotel.image, hotel.description,
+          hotel.totalRooms, hotel.sourceId
+        ]
+      );
+      savedRows.push(saved.rows[0]);
+    }
+
+    res.json({
+      source: "OpenStreetMap",
+      city: result.city,
+      discovered: result.hotels.length,
+      data: savedRows.map(mapHotel),
+      attribution: "Map data © OpenStreetMap contributors",
+      priceNotice: "Prices and room inventory are demo estimates, not live offers."
+    });
+  } catch (error) {
+    console.error("OSM hotel discovery error:", error.message);
+    res.status(502).json({
+      message: error.message || "Hotel discovery failed."
+    });
+  }
+});
+
 /*
  * STAYHUB Hotelbeds live-search bridge.
  * Local hotel records remain the source for UI/content.
@@ -873,13 +1430,14 @@ app.get("/api/hotelbeds/search", async (req, res) => {
     const requestedCity = String(city || destination || "").trim();
 
     let hotelCodes = [];
+    let destinationCode = "";
 
     if (requestedCity) {
       const cityKey = requestedCity.toLowerCase();
 
       const cityResult = await query(
         `
-        SELECT hotelbeds_code
+        SELECT hotelbeds_code, hotelbeds_destination_code
         FROM hotels
         WHERE is_active = TRUE
           AND hotelbeds_code IS NOT NULL
@@ -892,6 +1450,11 @@ app.get("/api/hotelbeds/search", async (req, res) => {
         `,
         [cityKey]
       );
+
+      destinationCode = String(
+        cityResult.rows.find((r) => r.hotelbeds_destination_code)
+          ?.hotelbeds_destination_code || ""
+      ).trim();
 
       hotelCodes = cityResult.rows
         .map((r) => Number(r.hotelbeds_code))
@@ -982,16 +1545,53 @@ app.get("/api/hotelbeds/search", async (req, res) => {
         ? mapped.data
         : [];
 
-    /*
-      Extra safety:
-      Even if Hotelbeds unexpectedly returns something outside the
-      requested list, discard it before sending it to STAYHUB.
-    */
-    const allowedCodes = new Set(hotelCodes.map(Number));
+    // Also search the specific destination to discover additional live hotels.
+    // Destination code comes from the city's existing database mapping.
+    let combinedRows = liveRows;
 
-    const filteredRows = requestedCity
-      ? liveRows.filter((h) => allowedCodes.has(Number(h.hotelbedsCode)))
-      : liveRows;
+    if (process.env.HOTELBEDS_DESTINATION_DISCOVERY === "true" && requestedCity && destinationCode) {
+      try {
+        const destinationResponse = await searchAvailability({
+          checkIn: String(checkIn),
+          checkOut: String(checkOut),
+          adults: Number(adults),
+          children: Number(children),
+          childAges: parsedChildAges,
+          rooms: Number(rooms),
+          hotelCodes: [],
+          destination: destinationCode,
+        });
+
+        const destinationMapped = mapAvailabilityResponse(destinationResponse);
+        const destinationRows = Array.isArray(destinationMapped)
+          ? destinationMapped
+          : Array.isArray(destinationMapped?.data)
+            ? destinationMapped.data
+            : [];
+
+        const uniqueByCode = new Map();
+
+        for (const hotel of [...liveRows, ...destinationRows]) {
+          const code = Number(hotel.hotelbedsCode);
+          if (Number.isInteger(code) && code > 0) {
+            uniqueByCode.set(code, hotel);
+          }
+        }
+
+        combinedRows = [...uniqueByCode.values()];
+
+        console.log(
+          `[Hotelbeds destination search] ${destinationCode} -> ${destinationRows.length} hotel(s)`
+        );
+      } catch (destinationError) {
+        console.warn(
+          "[Hotelbeds destination search failed; retaining mapped results]",
+          destinationError.message
+        );
+      }
+    }
+
+    const filteredRows = combinedRows;
 
     const returnedCodes = filteredRows
       .map((h) => Number(h.hotelbedsCode))
@@ -1033,7 +1633,7 @@ app.get("/api/hotelbeds/search", async (req, res) => {
         category: local?.category || h.category,
         image: local?.image || h.image || "",
         description: local?.description || h.description || "",
-        rating: Number(local?.rating ?? h.rating ?? 0),
+        rating: Number(local?.rating || h.rating || 0),
         price: Number(h.minRate || h.price || 0),
       };
     });

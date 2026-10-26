@@ -92,6 +92,7 @@ export async function searchAvailability({
   childAges = [],
   rooms = 1,
   hotelCodes = [],
+  destination = "",
 }) {
   if (!checkIn || !checkOut) {
     throw new Error("checkIn and checkOut are required.");
@@ -138,6 +139,10 @@ export async function searchAvailability({
   if (codes.length) {
     body.hotels = {
       hotel: codes,
+    };
+  } else if (String(destination).trim()) {
+    body.destination = {
+      code: String(destination).trim().toUpperCase(),
     };
   }
 
