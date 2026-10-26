@@ -779,28 +779,39 @@ app.post("/api/admin/login", async (req, res) => {
 const authFrontendUrl = () => (process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://stayhub-flax-two.vercel.app" : "http://localhost:5173")).replace(/\/$/, "");
 const authBackendUrl = (req) => (process.env.BACKEND_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-let smtpTransport;
 async function sendAuthEmail(to, subject, body) {
-  const smtpUser = process.env.SMTP_USER?.trim();
-  const smtpPass = process.env.SMTP_PASS?.replace(/\s/g, "");
-  if (!smtpUser || !smtpPass) throw new Error("SMTP credentials are not configured");
-  if (!smtpTransport) {
-    smtpTransport = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
-      port: Number(process.env.SMTP_PORT || 465),
-      secure: Number(process.env.SMTP_PORT || 465) === 465,
-      auth: { user: smtpUser, pass: smtpPass },
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 20000,
-    });
+  const apiKey = process.env.BREVO_API_KEY?.trim();
+  const senderEmail = process.env.BREVO_SENDER_EMAIL?.trim()
+    || "stayhub.support41@gmail.com";
+
+  if (!apiKey) {
+    throw new Error("BREVO_API_KEY is not configured");
   }
-  await smtpTransport.sendMail({
-    from: { name: "STAYHUB", address: smtpUser },
-    to,
-    subject,
-    text: body,
+
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "api-key": apiKey,
+    },
+    body: JSON.stringify({
+      sender: { name: "STAYHUB", email: senderEmail },
+      to: [{ email: to }],
+      subject,
+      textContent: body,
+    }),
+    signal: AbortSignal.timeout(20000),
   });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(
+      `Brevo email API failed (${response.status}): ${errorBody.slice(0, 500)}`
+    );
+  }
+
+  return response.json();
 }
 
 const verificationAttempts = new Map();
