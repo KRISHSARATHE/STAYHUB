@@ -83,6 +83,7 @@ function Booking() {
     adults: selectedAdults,
     children: selectedChildren,
     childAges: Array.from({ length: selectedChildren }, (_, index) => selectedAges[index] ?? 8),
+    extraBeds: 0,
   });
   const [verified, setVerified] = useState(false);
   const [liveBookingRate, setLiveBookingRate] = useState({
@@ -355,6 +356,10 @@ function Booking() {
           : 0
       );
 
+  const maxExtraBeds = Math.min(Number(formData.rooms || 1), formData.childAges.filter(age => age !== "" && Number(age) < 12).length);
+  const extraBeds = Math.min(Number(formData.extraBeds || 0), maxExtraBeds);
+  const extraBedAmount = extraBeds * 800 * Math.max(0, nights);
+
   const priceIsAvailable = hotelbedsRateKey
     ? liveBookingRate.available && liveBookingRate.total > 0
     : Number(hotel.price) > 0 && nights > 0;
@@ -370,7 +375,7 @@ function Booking() {
 
   const totalAmount = Math.max(
     0,
-    roomSubtotal - discountAmount
+    roomSubtotal + extraBedAmount - discountAmount
   );
 
   const applyCoupon = () => {
@@ -591,9 +596,13 @@ function Booking() {
       adults: Number(formData.adults),
       children: Number(formData.children),
       childAges: formData.childAges,
+      guestType: formData.guestType || "Family",
       guests: Number(formData.adults) + Number(formData.children),
       nights,
       roomAmount: roomSubtotal,
+      extraBeds,
+      extraBedRate: 800,
+      extraBedAmount,
       serviceFee: 0,
       tax: 0,
       discount: discountAmount,
@@ -1269,7 +1278,7 @@ function Booking() {
               </label>
               <div style={{ border: "1px solid #d1d5db", borderRadius: "9px", padding: "0 13px" }}>
                 <GuestSelector
-                  value={{ rooms: formData.rooms, adults: formData.adults, children: formData.children, childAges: formData.childAges }}
+                  value={{ rooms: formData.rooms, adults: formData.adults, children: formData.children, childAges: formData.childAges, guestType: formData.guestType }}
                   onChange={(value) => setFormData((prev) => ({ ...prev, ...value }))}
                 />
               </div>
@@ -1561,6 +1570,14 @@ function Booking() {
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Adults</span><strong>{formData.adults}</strong></div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}><span>Children</span><strong>{formData.children}</strong></div>
 
+
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,gap:12}}>
+                <label htmlFor="stayhub-extra-beds">Extra beds (₹800/night, max 1 per room)</label>
+                <select id="stayhub-extra-beds" value={extraBeds} onChange={e=>setFormData(prev=>({...prev,extraBeds:Number(e.target.value)}))} style={{padding:7,border:"1px solid #cbd5e1",borderRadius:8}}>
+                  {Array.from({length:maxExtraBeds+1},(_,i)=><option key={i} value={i}>{i}</option>)}
+                </select>
+              </div>
+              {extraBeds > 0 && <div role="status" aria-live="polite" style={{display:"flex",justifyContent:"space-between",marginBottom:10,color:"#1e40af"}}><span>Extra bed × {extraBeds} × {nights} night(s)</span><strong>₹{extraBedAmount.toLocaleString("en-IN")}</strong></div>}
 
               {discountAmount > 0 && (
                 <div

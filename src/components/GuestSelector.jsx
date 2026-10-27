@@ -9,6 +9,8 @@ const requiredRooms = (adults, ages) => Math.max(1, Math.ceil((Number(adults) + 
 
 function GuestSelector({ value, onChange, compact = false }) {
   const [open, setOpen] = useState(false);
+  const [notice, setNotice] = useState("");
+  const notify = (message) => setNotice(message);
   const data = {
     rooms: Number(value?.rooms) || 1,
     adults: Number(value?.adults) || 1,
@@ -24,6 +26,7 @@ function GuestSelector({ value, onChange, compact = false }) {
       nextData.childAges = ages;
     }
     nextData.rooms = Math.min(nextData.adults + nextData.children, Math.max(nextData.rooms, requiredRooms(nextData.adults, nextData.childAges)));
+    if (nextData.rooms > data.rooms) notify(`Rooms updated to ${nextData.rooms}. Booking price will be recalculated.`);
     onChange(nextData);
   };
 
@@ -99,7 +102,9 @@ function GuestSelector({ value, onChange, compact = false }) {
                       onChange={(e) => {
                         const ages = [...data.childAges];
                         ages[index] = Number(e.target.value);
-                        onChange({ ...data, childAges: ages, rooms: Math.max(effectiveRooms, requiredRooms(data.adults, ages)) });
+                        const updatedRooms = Math.max(effectiveRooms, requiredRooms(data.adults, ages));
+                        if (updatedRooms > effectiveRooms) notify(`Child aged 12+ counts towards adult occupancy. Rooms increased to ${updatedRooms}.`);
+                        onChange({ ...data, childAges: ages, rooms: updatedRooms });
                       }}
                       style={{ width: "100%", padding: "8px", border: "1px solid #cbd5e1", borderRadius: 8, background: "#fff", color: "#0f172a" }}
                     >
@@ -112,7 +117,8 @@ function GuestSelector({ value, onChange, compact = false }) {
             </div>
           )}
 
-          <button type="button" onClick={() => { if (data.childAges.some((age) => age === "")) { alert("Please select the age of every child."); return; } if(data.rooms < minimumRooms) onChange({...data, rooms:minimumRooms}); setOpen(false); }} style={{ width: "100%", marginTop: 14, padding: "10px", border: 0, borderRadius: 9, background: "#2563eb", color: "#fff", fontWeight: 800, cursor: "pointer" }}>
+          {notice && <div role="status" aria-live="polite" style={{marginTop:10,padding:10,borderRadius:9,background:"#eff6ff",border:"1px solid #bfdbfe",color:"#1e40af",fontSize:12,display:"flex",gap:8,alignItems:"start"}}><span style={{flex:1}}>{notice}</span><button type="button" aria-label="Dismiss notification" onClick={()=>setNotice("")} style={{border:0,background:"transparent",cursor:"pointer",color:"#1e40af"}}>✕</button></div>}
+          <button type="button" onClick={() => { if (data.childAges.some((age) => age === "")) { alert("Please select the age of every child."); return; } if(data.rooms < minimumRooms) onChange({...data, rooms:minimumRooms}); setOpen(false); setNotice(""); }} style={{ width: "100%", marginTop: 14, padding: "10px", border: 0, borderRadius: 9, background: "#2563eb", color: "#fff", fontWeight: 800, cursor: "pointer" }}>
             Done
           </button>
         </div>

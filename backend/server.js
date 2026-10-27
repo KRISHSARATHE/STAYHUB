@@ -88,9 +88,13 @@ const mapBooking = (row) => ({
   adults: Number(row.adults),
   children: Number(row.children),
   childAges: Array.isArray(row.child_ages) ? row.child_ages : [],
+  guestType: row.guest_type || "Family",
   guests: Number(row.adults) + Number(row.children),
   nights: Number(row.nights),
   roomAmount: Number(row.room_amount),
+  extraBeds: Number(row.extra_beds || 0),
+  extraBedRate: 800,
+  extraBedAmount: Number(row.extra_bed_amount || 0),
   serviceFee: Number(row.service_fee),
   tax: Number(row.tax),
   total: Number(row.total),
@@ -119,6 +123,7 @@ function requireAdmin(req, res, next) {
 
 async function ensureSchema() {
   // Automatic booking schema migration.
+  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS extra_beds INTEGER NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS extra_bed_amount NUMERIC(12,2) NOT NULL DEFAULT 0`);
   // Keeps demo/production databases compatible with the current booking API.
   await pool.query(`
     ALTER TABLE bookings
@@ -1110,6 +1115,7 @@ if (body.hotelbedsRateKey) {
     const adults = Number(body.adults || 1);
     const children = Number(body.children || 0);
     const childAges = Array.isArray(body.childAges) ? body.childAges.map(Number) : [];
+    const guestType = ["Family", "Couple", "Friends", "Individual"].includes(body.guestType) ? body.guestType : "Family";
     const hotelId = Number(body.hotelId);
     if (!hotelId || !nights || rooms < 1 || adults < 1 || children < 0 || childAges.length !== children) {
       return res.status(400).json({ message: "Invalid booking details." });
@@ -1157,6 +1163,12 @@ if (body.hotelbedsRateKey) {
       throw new Error("Price unavailable for this hotel. Please choose another hotel or try again later.");
     }
     const roomAmount = nights * unitPrice * rooms;
+    const extraBeds = Number(body.extraBeds || 0);
+    const youngChildren = childAges.filter(age => age < 12).length;
+    if (!Number.isInteger(extraBeds) || extraBeds < 0 || extraBeds > rooms || extraBeds > youngChildren) {
+      throw new Error("Extra beds: maximum one per room, and only for children under 12.");
+    }
+    const extraBedAmount = extraBeds * 800 * nights;
     const serviceFee = Number(body.serviceFee || 0);
     const tax = Number(body.tax || 0);
 
@@ -1221,7 +1233,7 @@ if (body.hotelbedsRateKey) {
 
     const total = Math.max(
       0,
-      roomAmount + serviceFee + tax - discount
+      roomAmount + extraBedAmount + serviceFee + tax - discount
     );
 
     const result = await client.query(
@@ -1229,13 +1241,13 @@ if (body.hotelbedsRateKey) {
         id,user_id,hotel_id,guest_name,phone,check_in,check_out,
         rooms,adults,children,child_ages,nights,room,
         room_amount,service_fee,tax,total,status,
-        coupon_code,discount,payment_method,payment_status,paid_at
+        coupon_code,discount,payment_method,payment_status,paid_at,guest_type,extra_beds,extra_bed_amount
       )
       VALUES (
         $1,$2,$3,$4,$5,$6,$7,
         $8,$9,$10,$11,$12,$13,
         $14,$15,$16,$17,'Confirmed',
-        $18,$19,$20,$21,$22
+        $18,$19,$20,$21,$22,$23,$24,$25
       ) RETURNING *`,
       [
         id,
@@ -1260,6 +1272,9 @@ if (body.hotelbedsRateKey) {
         paymentMethod,
         paymentStatus,
         paidAt,
+        guestType,
+        extraBeds,
+        extraBedAmount,
       ],
     );
     await client.query("COMMIT");
