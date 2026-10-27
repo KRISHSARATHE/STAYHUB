@@ -66,7 +66,7 @@ function GuestSelector({ value, onChange, compact = false }) {
 
       {open && (
         <div style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, zIndex: 50, width: 310, maxWidth: "calc(100vw - 32px)", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 14, boxShadow: "0 18px 45px rgba(15,23,42,.16)", padding: 16 }}>
-          
+
           <label style={{display:"grid", gap:5, fontSize:13, fontWeight:600, color:"#334155"}}>Travelling as
             <select value={data.guestType} onChange={(e)=>onChange({...data, guestType:e.target.value, rooms:effectiveRooms})} style={{padding:9,border:"1px solid #cbd5e1",borderRadius:8}}>
               { ["Family","Couple","Friends","Individual"].map(type=><option key={type} value={type}>{type}</option>) }
@@ -84,7 +84,7 @@ function GuestSelector({ value, onChange, compact = false }) {
             <button type="button" onClick={()=>onChange({...data,rooms:minimumRooms})} style={{flex:1,padding:9,border:"1px solid #cbd5e1",borderRadius:8,background:effectiveRooms===minimumRooms?"#dbeafe":"#fff",cursor:"pointer"}}>Shared rooms</button>
             <button type="button" onClick={()=>onChange({...data,rooms:data.adults+data.children})} style={{flex:1,padding:9,border:"1px solid #cbd5e1",borderRadius:8,background:effectiveRooms===data.adults+data.children?"#dbeafe":"#fff",cursor:"pointer"}}>1 guest per room</button>
           </div>
-          
+
           {counter("Adults", "adults", 1, 10)}
           {counter("Children", "children", 0, 6)}
           {data.children > 0 && (
@@ -111,7 +111,7 @@ function GuestSelector({ value, onChange, compact = false }) {
               </div>
             </div>
           )}
-          
+
           <button type="button" onClick={() => { if (data.childAges.some((age) => age === "")) { alert("Please select the age of every child."); return; } if(data.rooms < minimumRooms) onChange({...data, rooms:minimumRooms}); setOpen(false); }} style={{ width: "100%", marginTop: 14, padding: "10px", border: 0, borderRadius: 9, background: "#2563eb", color: "#fff", fontWeight: 800, cursor: "pointer" }}>
             Done
           </button>
