@@ -1115,6 +1115,19 @@ if (body.hotelbedsRateKey) {
       return res.status(400).json({ message: "Invalid booking details." });
     }
 
+    // Validate room occupancy server-side; the frontend alone is not trusted.
+    if (!Number.isInteger(rooms) || !Number.isInteger(adults) || !Number.isInteger(children) ||
+        childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 17)) {
+      return res.status(400).json({ message: "Invalid guest count or child age (0-17)." });
+    }
+    const minimumRooms = Math.max(1, Math.ceil((adults + childAges.filter((age) => age >= 12).length) / 2));
+    if (rooms < minimumRooms) {
+      return res.status(400).json({ message: `At least ${minimumRooms} rooms required for ${adults} adults and children aged 12+.`, minimumRooms });
+    }
+    if (rooms > adults + children) {
+      return res.status(400).json({ message: "Each booked room must have at least one guest." });
+    }
+
     await client.query("BEGIN");
     const hotelResult = await client.query("SELECT * FROM hotels WHERE id=$1 AND is_active=TRUE FOR UPDATE", [hotelId]);
     if (!hotelResult.rowCount) throw new Error("Hotel not found.");

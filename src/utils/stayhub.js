@@ -97,7 +97,9 @@ export const validateGuestSelection = ({ rooms, adults, children, childAges = []
   if (!Number.isInteger(adultCount) || adultCount < 1) return "At least 1 adult is required.";
   if (!Number.isInteger(childCount) || childCount < 0) return "Children cannot be negative.";
   if (childAges.length !== childCount) return "Please enter the age for every child.";
-  if (childAges.some((age) => age === "" || Number(age) < 0 || Number(age) > 17)) return "Child age must be between 0 and 17 years.";
+  if (childAges.some((age) => age === "" || !Number.isInteger(Number(age)) || Number(age) < 0 || Number(age) > 17)) return "Child age must be between 0 and 17 years.";
+  const minimumRooms = Math.max(1, Math.ceil((adultCount + childAges.filter((age) => Number(age) >= 12).length) / 2));
+  if (roomCount < minimumRooms) return `At least ${minimumRooms} rooms required for this guest group.`;
   if (adultCount + childCount < roomCount) return "Each room needs at least one guest.";
   return "";
 };
