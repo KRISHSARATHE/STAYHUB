@@ -1,3 +1,4 @@
+import CityAutocomplete from "./CityAutocomplete";
 import { safeHotelImage, handleHotelImageError } from "../utils/hotelImage.js";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
@@ -808,11 +809,12 @@ function Hotels() {
                 Search City
               </label>
 
-              <input
-                type="text"
+              <CityAutocomplete
+                id="hotels-city"
                 placeholder="Search city"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={setSearch}
+                hotels={hotels}
                 style={{
                   width: "100%",
                   boxSizing: "border-box",

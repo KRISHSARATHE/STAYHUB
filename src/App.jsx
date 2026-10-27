@@ -22,6 +22,7 @@ const Wishlist = lazy(() => import("./components/Wishlist"));
 const AdminLogin = lazy(() => import("./components/AdminLogin"));
 const AdminDashboard = lazy(() => import("./components/AdminDashboard"));
 import GuestSelector from "./components/GuestSelector";
+import CityAutocomplete from "./components/CityAutocomplete";
 import { getMinDate, tomorrowInput, validateGuestSelection, clearCurrentUser } from "./utils/stayhub";
 
 import "./index.css";
@@ -309,13 +310,12 @@ function Home() {
                 📍 Destination
               </label>
 
-              <input
-                type="text"
+              <CityAutocomplete
+                id="home-city"
                 placeholder="Where are you going?"
                 value={destination}
-                onChange={(e) =>
-                  setDestination(e.target.value)
-                }
+                onChange={setDestination}
+                hotels={hotels}
               />
 
             </div>
