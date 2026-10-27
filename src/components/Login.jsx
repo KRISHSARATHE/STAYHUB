@@ -212,7 +212,7 @@ function Login() {
                 </label>
 
                 <Link to="/forgot-password">Forgot Password?</Link>
-                <Link to="/resend-verification">Resend Verification</Link>
+                
 
               </div>
 
