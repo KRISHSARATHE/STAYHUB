@@ -732,6 +732,8 @@ function Booking() {
             <img
               src={safeHotelImage(confirmedBooking.image)} onError={handleHotelImageError}
               alt={confirmedBooking.hotelName}
+              loading="lazy"
+              decoding="async"
               style={{
                 width: "150px",
                 height: "110px",

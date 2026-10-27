@@ -59,9 +59,37 @@ export async function apiRequest(endpoint, options = {}) {
   return data;
 }
 
+let hotelsCache = null;
+let hotelsCacheTime = 0;
+let hotelsPendingRequest = null;
+
 export async function fetchHotels() {
-  const result = await apiRequest("/hotels");
-  return result.data || [];
+  const now = Date.now();
+  const cacheDuration = 30000;
+
+  if (hotelsCache && now - hotelsCacheTime < cacheDuration) {
+    return hotelsCache;
+  }
+
+  if (hotelsPendingRequest) {
+    return hotelsPendingRequest;
+  }
+
+  hotelsPendingRequest = (async () => {
+    const result = await apiRequest("/hotels");
+    const data = result.data || [];
+
+    hotelsCache = data;
+    hotelsCacheTime = Date.now();
+
+    return data;
+  })();
+
+  try {
+    return await hotelsPendingRequest;
+  } finally {
+    hotelsPendingRequest = null;
+  }
 }
 
 export async function fetchOsmHotels(city) {

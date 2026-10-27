@@ -1136,6 +1136,8 @@ function Hotels() {
                     <img
                       src={safeHotelImage(hotel.image)} onError={handleHotelImageError}
                       alt={hotel.name}
+                      loading="lazy"
+                      decoding="async"
                       style={{
                         width: "100%",
                         height: "100%",

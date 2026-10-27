@@ -8,19 +8,19 @@ import {
 
 const stayhubLogo = "/stayhub-logo.svg";
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { fetchHotels } from "./utils/api";
 
-import Hotels from "./components/Hotels";
-import HotelDetails from "./components/HotelDetails";
-import Booking from "./components/Booking";
-import Login from "./components/Login";
-import PasswordRecovery from "./components/PasswordRecovery";
-import Signup from "./components/Signup";
-import MyBookings from "./components/MyBookings";
-import Wishlist from "./components/Wishlist";
-import AdminLogin from "./components/AdminLogin";
-import AdminDashboard from "./components/AdminDashboard";
+const Hotels = lazy(() => import("./components/Hotels"));
+const HotelDetails = lazy(() => import("./components/HotelDetails"));
+const Booking = lazy(() => import("./components/Booking"));
+const Login = lazy(() => import("./components/Login"));
+const PasswordRecovery = lazy(() => import("./components/PasswordRecovery"));
+const Signup = lazy(() => import("./components/Signup"));
+const MyBookings = lazy(() => import("./components/MyBookings"));
+const Wishlist = lazy(() => import("./components/Wishlist"));
+const AdminLogin = lazy(() => import("./components/AdminLogin"));
+const AdminDashboard = lazy(() => import("./components/AdminDashboard"));
 import GuestSelector from "./components/GuestSelector";
 import { getMinDate, tomorrowInput, validateGuestSelection, clearCurrentUser } from "./utils/stayhub";
 
@@ -1248,7 +1248,7 @@ function App() {
 
     <BrowserRouter>
 
-      <Routes>
+      <Suspense fallback={<div role="status" style={{padding: "32px", textAlign: "center"}}>Loading STAYHUB...</div>}><Routes>
 
         {/* HOME */}
 
@@ -1319,7 +1319,7 @@ function App() {
         <Route path="/admin/login" element={<AdminLogin />} />
         <Route path="/admin" element={<AdminDashboard />} />
 
-      </Routes>
+      </Routes></Suspense>
 
     </BrowserRouter>
   );

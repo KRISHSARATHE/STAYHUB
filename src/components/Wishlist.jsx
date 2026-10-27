@@ -81,7 +81,7 @@ function Wishlist() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 24 }}>
             {savedHotels.map((hotel) => (
               <div key={hotel.id} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 18, overflow: "hidden", boxShadow: "0 8px 25px rgba(15,23,42,.07)" }}>
-                <div style={{ position: "relative", height: 210 }}><img src={safeHotelImage(hotel.image)} onError={handleHotelImageError} alt={hotel.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /><button type="button" onClick={async () => {
+                <div style={{ position: "relative", height: 210 }}><img src={safeHotelImage(hotel.image)} onError={handleHotelImageError} alt={hotel.name} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover" }} /><button type="button" onClick={async () => {
                         try {
                           await apiRequest(`/wishlist/${hotel.id}?email=${encodeURIComponent(user.email)}`, {
                             method: "DELETE",
