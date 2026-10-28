@@ -131,7 +131,10 @@ function requireAdmin(req, res, next) {
 
 async function ensureSchema() {
   // Automatic booking schema migration.
-  await pool.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS extra_beds INTEGER NOT NULL DEFAULT 0, ADD COLUMN IF NOT EXISTS extra_bed_amount NUMERIC(12,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE bookings
+    ADD COLUMN IF NOT EXISTS guest_type VARCHAR(30) NOT NULL DEFAULT 'Family',
+    ADD COLUMN IF NOT EXISTS extra_beds INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS extra_bed_amount NUMERIC(12,2) NOT NULL DEFAULT 0`);
   // Keeps demo/production databases compatible with the current booking API.
   await pool.query(`
     ALTER TABLE bookings
