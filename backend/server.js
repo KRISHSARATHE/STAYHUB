@@ -16,9 +16,17 @@ dotenv.config({ path: new URL("./.env", import.meta.url), override: true });
 const { Pool } = pg;
 const app = express();
 const port = Number(process.env.PORT || 5000);
-const jwtSecret = process.env.JWT_SECRET || "stayhub-dev-secret-change-me";
-const adminEmail = (process.env.ADMIN_EMAIL || "admin@stayhub.com").trim().toLowerCase();
-const adminPassword = process.env.ADMIN_PASSWORD || "admin123";
+const jwtSecret = process.env.JWT_SECRET;
+const adminEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+const adminPassword = process.env.ADMIN_PASSWORD;
+
+if (!jwtSecret || jwtSecret.length < 32) {
+  throw new Error("JWT_SECRET must contain at least 32 characters.");
+}
+
+if (!adminEmail || !adminPassword || adminPassword.length < 12) {
+  throw new Error("Secure ADMIN_EMAIL and ADMIN_PASSWORD are required.");
+}
 const googleOAuthClient = new OAuth2Client();
 
 app.use(cors({

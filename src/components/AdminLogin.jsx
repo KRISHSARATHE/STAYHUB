@@ -3,8 +3,6 @@ import { Link, useNavigate } from "react-router-dom";
 const logo = "/stayhub-logo.svg";
 import { apiRequest } from "../utils/api";
 
-const ADMIN_EMAIL = "admin@stayhub.com";
-const ADMIN_PASSWORD = "admin123";
 
 export default function AdminLogin() {
   const navigate = useNavigate();
@@ -65,7 +63,7 @@ export default function AdminLogin() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@stayhub.com"
+                placeholder="Enter admin email"
                 required
               />
             </div>
@@ -81,10 +79,6 @@ export default function AdminLogin() {
             </div>
             <button className="login-submit" type="submit">Login to STAYHUB Admin →</button>
           </form>
-
-          <div className="admin-demo-note admin-login-note">
-            Demo credentials: <strong>admin@stayhub.com</strong> / <strong>admin123</strong>
-          </div>
 
           <Link to="/" className="admin-back-link">← Back to STAYHUB</Link>
         </div>
